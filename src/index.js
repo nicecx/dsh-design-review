@@ -1,20 +1,21 @@
 /**
  * dsh-design-review — 设计方案强制交叉评审插件（宿主级，跨会话共享）。
  *
- * 双功能（005 审核 approved）：
- *  1. 设计评审：任意会话写入设计文档（patterns/keywords 识别）→ 自动提审
- *     review-handoff（type=design）→ 结论注入发起会话 + 文档头标记。
- *  2. lesson 评审：lesson_review_submit → 提审（type=lesson）→ approved 措施
+ * 双功能（005 审核 approved；阶段 3 = 026 approved 入队改造）：
+ *  1. 设计评审：任意会话写入设计文档（patterns/keywords 识别）→ 自动入队
+ *     task-queue（tier=review，消费端出队写 review-handoff）→ 结论注入发起会话。
+ *  2. lesson 评审：lesson_review_submit → 入队（type=lesson）→ approved 措施
  *     append-only 追加到 OPS-GUARDRAILS.md（带日期/事故引用/来源，git 可回滚）。
  *
- * 安全设计（004 审核 9 条 + 005 非阻塞全部落实）：
+ * 安全设计（004 审核 9 条 + 005 非阻塞 + 026 阶段 3 全部落实）：
  *  - 自身写入豁免（OWN_WRITE_MARKER，防死循环）
- *  - 单槽并发防护（pending 检查，queueMode=skip 默认，绝不覆盖）
+ *  - 单槽并发防护（队列已有 queued/processing review → skip，queueMode=skip 默认）
+ *  - 取号扫 docs/（007 lesson 单一编号源，不再读 request.json——入队模式滞后）
  *  - watchdog 接入（inject:['watchdog'] 登记轮询任务，非裸 setTimeout）
  *  - 守则追加冲突检测 + append-only
  */
 
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { appendFileSync, copyFileSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, existsSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -37,6 +38,9 @@ export function apply(ctx, rawConfig = {}) {
   const guardrailsPath = config.guardrailsPath || path.join(os.homedir(), '.dsh', 'OPS-GUARDRAILS.md')
   const logPath = config.logPath || path.join(os.homedir(), '.dsh', 'design-review.log')
   const queueFile = path.join(reviewDir, 'pending-queue.json')
+  // 阶段 3（026）：入队 task-queue（唯一真相源），不再直接写 request.json
+  const taskQueuePath = config.taskQueuePath || path.join(os.homedir(), '.dsh', 'task-queue', 'queue.json')
+  const docsDir = path.join(reviewDir, 'docs')
 
   const ensureDir = () => mkdirSync(reviewDir, { recursive: true })
   const audit = (entry) => {
@@ -48,51 +52,94 @@ export function apply(ctx, rawConfig = {}) {
   const readJson = (p) => {
     try { return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null } catch { return null }
   }
+  const readQueue = () => {
+    const q = readJson(taskQueuePath)
+    return Array.isArray(q) ? q : []
+  }
+  const writeQueue = (q) => {
+    mkdirSync(path.dirname(taskQueuePath), { recursive: true })
+    const tmp = taskQueuePath + '.tmp'
+    writeFileSync(tmp, JSON.stringify(q, null, 2))
+    renameSync(tmp, taskQueuePath) // 原子替换（与消费端同语义）
+  }
+  const queueHasPendingReview = () =>
+    readQueue().some((t) => t.tier === 'review' && (t.status === 'queued' || t.status === 'processing'))
   const nextRequestId = () => {
+    // 007 lesson 单一编号源：扫 docs/ 当天最大号 +1（不再读 request.json——入队模式滞后）
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
-    const req = readJson(path.join(reviewDir, 'request.json'))
-    const m = req?.requestId ? String(req.requestId).match(new RegExp(`^${today}-(\\d+)$`)) : null
-    return `${today}-${m ? String(Number(m[1]) + 1).padStart(3, '0') : '001'}`
+    let maxN = 0
+    try {
+      for (const fn of readdirSync(docsDir)) {
+        const m = fn.match(new RegExp(`^${today}-(\\d+)\\.md$`))
+        if (m) maxN = Math.max(maxN, Number(m[1]))
+      }
+    } catch { /* docs 不存在 */ }
+    return `${today}-${String(maxN + 1).padStart(3, '0')}`
   }
 
-  /** 提审（单槽防护：有 pending 且无 result → 按 queueMode 排队或跳过）。 */
+  /**
+   * 提审（阶段 3 入队版）：文档快照 docs/<rid>.md（幂等，src!=dst 才复制）→
+   * 入队 task-queue tier=review（单槽：队列已有 queued/processing review → skip）。
+   */
   const submit = (opts) => {
     ensureDir()
-    const reqPath = path.join(reviewDir, 'request.json')
-    const resPath = path.join(reviewDir, 'result.json')
-    const cur = readJson(reqPath)
-    if (hasPendingRequest(cur) && !hasResultFor(readJson(resPath), cur.requestId)) {
-      if (config.queueMode === 'queue') {
-        const q = readJson(queueFile) || []
-        q.push({ ...opts, queuedAt: new Date().toISOString() })
-        writeFileSync(queueFile, JSON.stringify(q, null, 2))
-        audit({ ts: new Date().toISOString(), action: 'queued', requestId: opts.requestId, title: opts.title })
-        return { ok: true, queued: true, note: '已有 pending 请求，已入队' }
-      }
-      audit({ ts: new Date().toISOString(), action: 'skipped', title: opts.title })
-      return { ok: false, queued: false, note: '已有 pending 请求，按 queueMode=skip 跳过' }
-    }
     const requestId = opts.requestId || nextRequestId()
-    const req = buildRequest({ ...opts, requestId })
-    writeFileSync(reqPath, JSON.stringify(req, null, 2))
-    audit({ ts: new Date().toISOString(), action: 'submit', requestId, type: req.type, title: opts.title })
+    if (queueHasPendingReview()) {
+      audit({ ts: new Date().toISOString(), action: 'skipped', title: opts.title })
+      return { ok: false, queued: false, note: '队列已有 pending review 任务（单槽），跳过' }
+    }
+    // 文档快照（013 建议 + 026：幂等双保险；消费端出队时也会落盘）
+    try {
+      if (opts.docPath) {
+        mkdirSync(docsDir, { recursive: true })
+        const dst = path.join(docsDir, `${requestId}.md`)
+        if (path.resolve(opts.docPath) !== path.resolve(dst) && existsSync(opts.docPath)) {
+          copyFileSync(opts.docPath, dst)
+        }
+      }
+    } catch (e) {
+      audit({ ts: new Date().toISOString(), action: 'snapshot-failed', requestId, error: String(e) })
+    }
+    const now = new Date().toISOString()
+    const task = {
+      id: `tq-${requestId}`,
+      tier: 'review',
+      payload: {
+        requestId,
+        title: opts.title,
+        docPath: path.join(docsDir, `${requestId}.md`),
+        changeFiles: opts.changeFiles || [],
+        tests: opts.tests || '',
+        type: opts.type || 'design',
+        urgency: opts.urgency || 'normal',
+      },
+      priority: opts.urgency === 'urgent' ? 0 : 1,
+      status: 'queued',
+      attempts: 0,
+      claimedBy: null,
+      leaseExpiry: null,
+      createdAt: now,
+      updatedAt: null,
+    }
+    const q = readQueue()
+    q.push(task)
+    writeQueue(q)
+    audit({ ts: now, action: 'enqueue', requestId, type: task.payload.type, title: opts.title })
     return { ok: true, requestId, queued: false }
   }
 
-  /** 排空队列：当前 request 已出 result 时，把队首提升为 request.json。 */
+  /**
+   * 过渡兼容（026 阶段 3）：旧 pending-queue.json（queueMode=queue 时代）遗留任务
+   * 转投 task-queue（新唯一真相源）；正常路径此文件应为空。
+   */
   const drainQueue = () => {
-    const reqPath = path.join(reviewDir, 'request.json')
-    const resPath = path.join(reviewDir, 'result.json')
-    const cur = readJson(reqPath)
-    if (hasPendingRequest(cur) && !hasResultFor(readJson(resPath), cur.requestId)) return // 仍有 pending
     const q = readJson(queueFile) || []
     if (q.length === 0) return
-    const next = q.shift()
-    writeFileSync(queueFile, JSON.stringify(q, null, 2))
-    const requestId = nextRequestId()
-    const req = buildRequest({ ...next, requestId })
-    writeFileSync(reqPath, JSON.stringify(req, null, 2))
-    audit({ ts: new Date().toISOString(), action: 'drain', requestId, title: next.title })
+    writeFileSync(queueFile, JSON.stringify([], null, 2))
+    for (const item of q) {
+      const r = submit({ ...item, requestId: undefined })
+      audit({ ts: new Date().toISOString(), action: 'migrate-legacy', requestId: r.requestId || '-', title: item.title, ok: r.ok })
+    }
   }
 
   /** 投递结论回发起会话。 */
@@ -169,7 +216,7 @@ export function apply(ctx, rawConfig = {}) {
         const r = submit({ title: args.title, docPath: args.docPath, changeFiles: args.changeFiles || [], tests: args.tests, type: 'design', sessionId })
         if (!r.ok) return `⚠️ ${r.note}`
         startPolling(r.requestId, sessionId, args.title, 'design')
-        return `✅ 已提审 ${r.requestId}（type=design）\n文档: ${args.docPath}\n结论将注入本会话。`
+        return `✅ 已入队 ${r.requestId}（tier=review，消费端出队后写 review-handoff）\n文档: ${args.docPath}\n结论将注入本会话。`
       },
     },
     {
@@ -211,7 +258,7 @@ export function apply(ctx, rawConfig = {}) {
         const r = submit({ title: `[lesson] ${args.title}`, docPath, changeFiles: [docPath], tests: '', type: 'lesson', sessionId })
         if (!r.ok) return `⚠️ ${r.note}`
         startPolling(r.requestId, sessionId, args.title, 'lesson')
-        return `✅ 已提审 ${r.requestId}（type=lesson）\napproved 后将防复发措施追加到 OPS-GUARDRAILS.md。`
+        return `✅ 已入队 ${r.requestId}（type=lesson）\napproved 后将防复发措施追加到 OPS-GUARDRAILS.md。`
       },
     },
     {

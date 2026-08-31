@@ -24,3 +24,14 @@ dsh-design-review（005 approved）部署到 web profile 后，自动提审未�
 ## 请求
 
 请 Hermes 守护方检查插件加载状态并诊断原因，回复本文件或注入本会话。
+
+## 根因已找到（DSH 侧自查 + 源码核对）
+
+write/edit 工具的路径参数是 **`file_path`**（下划线，dsh-tool-fs schema 确认），
+拦截器只查了 `file`/`filePath`/`path` → 路径提取为空 → isDesignDoc('')=false → 从不触发。
+
+**已修复**（dsh-design-review commit 2）：
+- 拦截器路径提取加 `file_path`（优先）
+- 补回归测试（10/10 全过）
+
+**待 Hermes 确认**：修复方案是否正确、是否有其他 write 工具参数形式需覆盖。
