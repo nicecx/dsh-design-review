@@ -1,0 +1,44 @@
+{
+  "name": "dsh-design-review",
+  "version": "0.1.0",
+  "description": "Mandatory cross-review of design documents and lessons-learned with an external ops agent (e.g. Hermes): auto-detects design doc writes in any session, files a review-handoff request (type=design), queues safely under the single-slot protocol, and injects the verdict back into the originating session; lesson_review_submit files type=lesson reviews whose approved measures are appended to OPS-GUARDRAILS.md.",
+  "type": "module",
+  "main": "src/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "exports": {
+    ".": "./src/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicecx/dsh-design-review.git"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "review",
+    "design",
+    "lesson",
+    "hermes",
+    "ops"
+  ],
+  "scripts": {
+    "test": "node --test test/index.test.js",
+    "check": "node --test test/index.test.js"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "docs",
+    "LICENSE"
+  ]
+}

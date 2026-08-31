@@ -1,0 +1,9 @@
+# dsh-design-review bundle patch: 挂载设计方案强制交叉评审插件（宿主级，跨会话共享）。
+# 工具: design_review_submit / lesson_review_submit / review_status。
+# 功能: 任意会话写入设计文档 → 自动提审 review-handoff（type=design）；
+#       任意会话调用 lesson_review_submit → 提审（type=lesson）→ approved 措施
+#       自动 append-only 追加到 ~/.dsh/OPS-GUARDRAILS.md。
+# 配置见 README（mode: advisory|mandatory|off；patterns 收窄默认）。
+- insert:
+    - id: dsh-design-review
+      name: 'dsh-design-review'
