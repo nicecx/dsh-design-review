@@ -249,7 +249,8 @@ export function apply(ctx, rawConfig = {}) {
       if (tool !== 'write' && tool !== 'edit') return next()
       if (exec?.agent === undefined) return next()
       const args = exec.arguments ?? {}
-      const filePath = args.file || args.filePath || args.path || ''
+      // write/edit 工具的路径参数是 file_path（下划线，DSH dsh-tool-fs schema）
+      const filePath = args.file_path || args.file || args.filePath || args.path || ''
       // 自身写入豁免（防死循环）
       if (args.headers?.[OWN_WRITE_MARKER] === '1') return next()
       // 读取文件前 40 行做关键词启发

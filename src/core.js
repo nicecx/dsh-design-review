@@ -58,14 +58,17 @@ export function validateConfig(cfg) {
   return { ok: true }
 }
 
-/** glob 简配：把 glob（如 *.design.md、DESIGN.md）转成正则。 */
+/** glob 简配：把 glob（如 *.design.md、DESIGN.md、双星号/星号形式）转成正则。
+ * 支持双星号加斜杠前缀为可选段：既匹配完整路径，也匹配纯文件名/相对路径。 */
 function globToRegex(glob) {
-  const escaped = glob
+  let g = String(glob).replace(/\\/g, '/')
+  if (g.startsWith('**/')) g = g.slice(3)
+  const escaped = g
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
     .replace(/\*\*/g, '__DOUBLE__')
     .replace(/\*/g, '[^/]*')
     .replace(/__DOUBLE__/g, '.*')
-  return new RegExp(`^${escaped}$`)
+  return new RegExp(`^(?:.*/)?${escaped}$`)
 }
 
 /**

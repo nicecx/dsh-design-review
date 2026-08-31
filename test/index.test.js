@@ -69,3 +69,11 @@ test('validateConfig', () => {
   assert.equal(validateConfig({ patterns: 'not-array' }).ok, false)
   assert.equal(validateConfig({ mode: 'advisory', queueMode: 'skip' }).ok, true)
 })
+
+test('write 工具参数 file_path 形式可提取（回归：部署 bug）', () => {
+  // 模拟 tools/execute 拦截里从 exec.arguments 提取路径的逻辑
+  const args = { file_path: '/x/y/proposal.design.md', content: '...' }
+  const fp = args.file_path || args.file || args.filePath || args.path || ''
+  assert.equal(fp, '/x/y/proposal.design.md')
+  assert.equal(isDesignDoc(fp, '', defaultConfig()), true)
+})
