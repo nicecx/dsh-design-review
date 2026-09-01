@@ -21,7 +21,8 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection,
+  checkTemplateSections, scanDefectPattern, OWN_WRITE_MARKER,
 } from './core.js'
 
 export const name = 'dsh-design-review'
@@ -409,5 +410,6 @@ apply.inject = ['tools', 'agents', 'watchdog']
 // 纯函数导出（单测）
 export {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection,
+  checkTemplateSections, scanDefectPattern, OWN_WRITE_MARKER,
 } from './core.js'
