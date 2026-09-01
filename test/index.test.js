@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent, OWN_WRITE_MARKER,
 } from '../src/core.js'
 
 test('T1: 写入 *.design.md → 识别为设计文档', () => {
@@ -218,4 +218,20 @@ test('I4: design 缺模板章 → 拒绝（双关卡回归）', () => {
   const r = gateByType('design', '## 复用评估\n- CAPABILITY-INDEX x\n## 方案\nx\n')
   assert.equal(r.ok, false)
   assert.match(r.reason, /模板缺章/)
+})
+
+// ── 20260901-021 approved：新文件绕过窗口回归（pickGateContent 接缝）──
+test('G1: content 优先（write 新文件未落盘场景）→ 用待写内容', () => {
+  const r = pickGateContent({ content: '## 复用评估\n- CAPABILITY-INDEX x\n', docPath: '/nonexistent/new.md', existsSync: () => false })
+  assert.equal(r, '## 复用评估\n- CAPABILITY-INDEX x\n')
+})
+
+test('G2: 无 content 且文件存在 → 读文件', () => {
+  const r = pickGateContent({ docPath: '/x/y.md', existsSync: () => true }, () => 'file-content')
+  assert.equal(r, 'file-content')
+})
+
+test('G3: 无 content 且文件不存在 → undefined（调用方跳过检查）', () => {
+  const r = pickGateContent({ docPath: '/x/y.md', existsSync: () => false })
+  assert.equal(r, undefined)
 })

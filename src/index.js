@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
   buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection,
-  checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, OWN_WRITE_MARKER,
+  checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent, OWN_WRITE_MARKER,
 } from './core.js'
 
 export const name = 'dsh-design-review'
@@ -90,15 +90,11 @@ export function apply(ctx, rawConfig = {}) {
       return { ok: false, queued: false, note: '队列已有 pending review 任务（单槽），跳过' }
     }
     // 统一入队关卡（20260901-019 approved：gateByType——design=复用+模板；skill=仅复用；lesson=豁免）
-    // 20260901 修复：优先用 opts.content（write/edit 待写内容，拦截时文件可能未落盘——
-    // 新文件首次写入 existsSync=false 会绕过关卡）；无 content 才读文件
+    // 20260901-021 approved：pickGateContent——待写内容优先（新文件首次写入未落盘，防绕过窗口）
     let reuseCheck = { index: [], awesome: [], github: [] }
     try {
       if (opts.type === 'design' || opts.type === 'skill') {
-        let content = opts.content
-        if (content === undefined && opts.docPath && existsSync(opts.docPath)) {
-          content = readFileSync(opts.docPath, 'utf8')
-        }
+        const content = pickGateContent({ ...opts, existsSync })
         if (content !== undefined) {
           const r = gateByType(opts.type, content)
           if (!r.ok) {
@@ -314,7 +310,9 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
           args.reproducible ? `## 可复现性\n${args.reproducible}` : '',
         ].filter(Boolean).join('\n')
         writeFileSync(docPath, content)
-        const r = submit({ title: `[lesson] ${args.title}`, docPath, changeFiles: [docPath], tests: '', type: 'lesson', sessionId, defectPattern: args.defectPattern || '' })
+        // 021 approved 非阻塞修复：submit 传已算的 rid（否则 submit 再取号 = rid+1，
+        // 导致 requestId 与 docs/<rid>.md 错位——009/012 的 changeFiles 指向旧号问题）
+        const r = submit({ title: `[lesson] ${args.title}`, docPath, changeFiles: [docPath], tests: '', type: 'lesson', sessionId, requestId: rid, defectPattern: args.defectPattern || '' })
         if (!r.ok) return `⚠️ ${r.note}`
         startPolling(r.requestId, sessionId, args.title, 'lesson')
         return `✅ 已入队 ${r.requestId}（type=lesson）\napproved 后将防复发措施追加到 OPS-GUARDRAILS.md${args.defectPattern ? '，并按缺陷模式做传播扫描。' : '。'}`
@@ -418,5 +416,5 @@ apply.inject = ['tools', 'agents', 'watchdog']
 export {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
   buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection,
-  checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, OWN_WRITE_MARKER,
+  checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent, OWN_WRITE_MARKER,
 } from './core.js'

@@ -109,6 +109,19 @@ export function isSkillDoc(filePath) {
 }
 
 /**
+ * 关卡内容解析（20260901-021 approved）：拦截型校验必须读"待写内容"而非已落盘文件——
+ * write/edit 前置拦截时新文件尚未落盘，existsSync/readFileSync 会静默跳过（新文件绕过窗口）。
+ * 优先级：opts.content（待写内容）→ 文件已存在则读文件 → undefined（跳过检查，调用方决定）。
+ */
+export function pickGateContent(opts, readFile = (p) => { try { return readFileSync(p) } catch { return undefined } }) {
+  if (opts.content !== undefined) return opts.content
+  if (opts.docPath && opts.existsSync && opts.existsSync(opts.docPath)) {
+    try { return readFile(opts.docPath) } catch { return undefined }
+  }
+  return undefined
+}
+
+/**
  * 统一入队关卡（20260901-019 approved）：
  * - design：复用评估 + 设计模板（双检查）
  * - skill：仅复用评估（SKILL.md 内嵌「## 复用评估」节；跳过 7 章模板）
