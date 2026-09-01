@@ -112,6 +112,7 @@ export function apply(ctx, rawConfig = {}) {
         tests: opts.tests || '',
         type: opts.type || 'design',
         urgency: opts.urgency || 'normal',
+        sessionId: opts.sessionId || '',  // 035 approved：发起会话 id（Hermes 按此路由结论）
       },
       priority: opts.urgency === 'urgent' ? 0 : 1,
       status: 'queued',
@@ -168,7 +169,9 @@ export function apply(ctx, rawConfig = {}) {
         const res = readJson(resPath)
         if (res && res.requestId === requestId && res.verdict) {
           const verdict = res.verdict
-          deliver(sessionId, `「${title}」评审结论: ${verdict}\n${res.summary || ''}${res.details?.length ? '\n' + res.details.join('\n') : ''}`)
+          // 035 approved：投递审计（可核验发起会话是否收到结论）
+          const delivered = deliver(sessionId, `「${title}」评审结论: ${verdict}\n${res.summary || ''}${res.details?.length ? '\n' + res.details.join('\n') : ''}`)
+          audit({ ts: new Date().toISOString(), action: delivered ? 'deliver-ok' : 'deliver-fail', sessionId, requestId })
           if (type === 'lesson' && verdict === 'approved') {
             // 守则追加（append-only + 冲突检测）
             const existing = existsSync(guardrailsPath) ? readFileSync(guardrailsPath, 'utf8') : ''
