@@ -106,6 +106,44 @@ export function hasResultFor(res, requestId) {
   return Boolean(res && res.requestId === requestId)
 }
 
+/**
+ * 复用评估关卡（20260901-003 approved）：设计文档必须含「复用评估」节且
+ * 命中至少一个引用源，或含「无复用/全新功能」逃逸声明。
+ *
+ * 返回 { ok, reason, references: { index, awesome, github } }：
+ * - 判定（固化）：节存在 且（命中任一源 或 逃逸声明）= ok；节缺失/空节 = not ok
+ * - 大小写不敏感：整段节内容统一 lowercase 后匹配（capability-index / awesome / github.com）
+ * - 引用分类：CAPABILITY-INDEX → index；awesome → awesome；github.com → github（存命中行，截断 80）
+ * - 逃逸：含「无复用」或「全新功能」声明 → ok（references 可空，audit 记 reuse-escape 供复核）
+ */
+export function checkReuseSection(content) {
+  const text = String(content || '')
+  const lower = text.toLowerCase()
+  const sectionMatch = lower.match(/##\s*reuse evaluation[\s\S]*?(?=##\s|$)/i) || lower.match(/##\s*复用评估[\s\S]*?(?=##\s|$)/)
+  const references = { index: [], awesome: [], github: [] }
+  if (!sectionMatch) {
+    return { ok: false, reason: '缺少「## 复用评估」节（开发前复用检索规范）', references }
+  }
+  const section = sectionMatch[0]
+  const lines = section.split('\n')
+  for (const line of lines) {
+    const l = line.toLowerCase()
+    if (l.includes('capability-index')) references.index.push(line.trim().slice(0, 80))
+    if (l.includes('awesome')) references.awesome.push(line.trim().slice(0, 80))
+    if (l.includes('github.com')) references.github.push(line.trim().slice(0, 80))
+  }
+  const hit = references.index.length + references.awesome.length + references.github.length > 0
+  const escape = /无复用|全新功能/.test(section)
+  if (hit || escape) {
+    return {
+      ok: true,
+      reason: escape && !hit ? '逃逸声明（无复用/全新功能）' : `命中 ${references.index.length + references.awesome.length + references.github.length} 条引用`,
+      references,
+    }
+  }
+  return { ok: false, reason: '「复用评估」节为空：须含 CAPABILITY-INDEX / awesome / GitHub 引用，或声明「无复用」（全新功能）', references }
+}
+
 /** 构造 review-handoff 请求（type=design|lesson）。 */
 export function buildRequest(opts) {
   const now = opts.requestedAt instanceof Date ? opts.requestedAt : new Date(opts.requestedAt || Date.now())
@@ -121,6 +159,8 @@ export function buildRequest(opts) {
     urgency: opts.urgency || 'normal',
     status: 'pending',
     sessionId: opts.sessionId || '',
+    // 20260901-003 approved：结构化复用检索结果（Hermes 可核对与文档一致性）
+    reuseCheck: opts.reuseCheck || { index: [], awesome: [], github: [] },
   }
 }
 

@@ -21,7 +21,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, OWN_WRITE_MARKER,
 } from './core.js'
 
 export const name = 'dsh-design-review'
@@ -78,8 +78,8 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   /**
-   * 提审（阶段 3 入队版）：文档快照 docs/<rid>.md（幂等，src!=dst 才复制）→
-   * 入队 task-queue tier=review（单槽：队列已有 queued/processing review → skip）。
+   * 提审（阶段 3 入队版）：复用评估关卡（003 approved）→ 文档快照 → 入队 task-queue。
+   * 关卡：文档含「复用评估」节且命中引用/逃逸声明，否则拒绝入队（note 给作者三查提示）。
    */
   const submit = (opts) => {
     ensureDir()
@@ -87,6 +87,24 @@ export function apply(ctx, rawConfig = {}) {
     if (queueHasPendingReview()) {
       audit({ ts: new Date().toISOString(), action: 'skipped', title: opts.title })
       return { ok: false, queued: false, note: '队列已有 pending review 任务（单槽），跳过' }
+    }
+    // 复用评估关卡（20260901-003 approved：读全文判定，勿用 firstLines 启发片段）
+    let reuseCheck = { index: [], awesome: [], github: [] }
+    try {
+      if (opts.docPath && existsSync(opts.docPath)) {
+        const content = readFileSync(opts.docPath, 'utf8')
+        const r = checkReuseSection(content)
+        if (!r.ok) {
+          audit({ ts: new Date().toISOString(), action: 'reuse-reject', requestId, title: opts.title, reason: r.reason })
+          return {
+            ok: false, queued: false,
+            note: `提审被拒：${r.reason}。请补充「## 复用评估」节（三查：CAPABILITY-INDEX / awesome / GitHub 引用；全新功能可声明「无复用」）。`,
+          }
+        }
+        reuseCheck = r.references
+      }
+    } catch (e) {
+      audit({ ts: new Date().toISOString(), action: 'reuse-check-failed', requestId, error: String(e) })
     }
     // 文档快照（013 建议 + 026：幂等双保险；消费端出队时也会落盘）
     try {
@@ -113,6 +131,7 @@ export function apply(ctx, rawConfig = {}) {
         type: opts.type || 'design',
         urgency: opts.urgency || 'normal',
         sessionId: opts.sessionId || '',  // 035 approved：发起会话 id（Hermes 按此路由结论）
+        reuseCheck,  // 003 approved：结构化复用检索结果（Hermes 可核对一致性）
       },
       priority: opts.urgency === 'urgent' ? 0 : 1,
       status: 'queued',
@@ -303,10 +322,10 @@ export function apply(ctx, rawConfig = {}) {
       const filePath = args.file_path || args.file || args.filePath || args.path || ''
       // 自身写入豁免（防死循环）
       if (args.headers?.[OWN_WRITE_MARKER] === '1') return next()
-      // 读取文件前 40 行做关键词启发
-      let firstLines = ''
-      try { firstLines = readFileSync(filePath, 'utf8').slice(0, 4000) } catch { /* 新文件 */ }
-      if (!isDesignDoc(filePath, firstLines, config)) return next()
+      // 读取文件做设计文档启发（003：readFileSync 全文；submit 内部关卡按全文判定）
+      let content = ''
+      try { content = readFileSync(filePath, 'utf8') } catch { /* 新文件 */ }
+      if (!isDesignDoc(filePath, content.slice(0, 4000), config)) return next()
       const sessionId = String(exec.agent.session.id || '')
       const r = submit({ title: `[design] ${path.basename(filePath)}`, docPath: filePath, changeFiles: [filePath], type: 'design', sessionId })
       if (r.ok) {
@@ -317,6 +336,9 @@ export function apply(ctx, rawConfig = {}) {
           deliver(sessionId, `检测到设计文档写入: ${filePath}\n已提审 ${r.requestId}（advisory 通知）`)
         }
         startPolling(r.requestId, sessionId, path.basename(filePath), 'design')
+      } else {
+        // 003 approved：关卡拒绝不再静默——作者收到原因 + 三查提示（audit reuse-reject 已在 submit 内记录）
+        deliver(sessionId, `⚠️ 设计文档未通过复用评估关卡：${r.note}`)
       }
       return next()
     }, { prepend: true, global: true })
@@ -354,5 +376,5 @@ apply.inject = ['tools', 'agents', 'watchdog']
 // 纯函数导出（单测）
 export {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, OWN_WRITE_MARKER,
 } from './core.js'

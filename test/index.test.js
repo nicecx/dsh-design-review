@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, OWN_WRITE_MARKER,
 } from '../src/core.js'
 
 test('T1: 写入 *.design.md → 识别为设计文档', () => {
@@ -76,4 +76,52 @@ test('write 工具参数 file_path 形式可提取（回归：部署 bug）', ()
   const fp = args.file_path || args.file || args.filePath || args.path || ''
   assert.equal(fp, '/x/y/proposal.design.md')
   assert.equal(isDesignDoc(fp, '', defaultConfig()), true)
+})
+
+// ── 20260901-003 approved：复用评估关卡 checkReuseSection ──
+test('R1: 复用评估节 + CAPABILITY-INDEX 引用 → ok 且 references.index 命中', () => {
+  const doc = '# 方案\n\n## 复用评估\n- 本地已有能力（CAPABILITY-INDEX）：dsh-task-queue → 复用\n'
+  const r = checkReuseSection(doc)
+  assert.equal(r.ok, true)
+  assert.ok(r.references.index.length >= 1)
+})
+
+test('R2: github.com 链接 → ok 且 references.github 命中', () => {
+  const doc = '## 复用评估\n- GitHub 借鉴：https://github.com/foo/bar\n'
+  const r = checkReuseSection(doc)
+  assert.equal(r.ok, true)
+  assert.ok(r.references.github.length >= 1)
+})
+
+test('R3: 缺复用评估节 → not ok（含提示）', () => {
+  const doc = '# 方案\n\n## 背景\n无复用评估节\n'
+  const r = checkReuseSection(doc)
+  assert.equal(r.ok, false)
+  assert.match(r.reason, /复用评估/)
+})
+
+test('R4: 大小写不敏感（英文节名 + 引用大小写变体）→ ok', () => {
+  const doc = '# x\n\n## Reuse Evaluation\n- Capability-Index 条目：y\n- awesome 插件：z\n'
+  const r = checkReuseSection(doc)
+  assert.equal(r.ok, true)
+  assert.ok(r.references.index.length >= 1)
+  assert.ok(r.references.awesome.length >= 1)
+})
+
+test('R5: 逃逸口「无复用」声明 → ok（全新功能）', () => {
+  const doc = '## 复用评估\n- 无复用：全新功能，无既有资产可复用（理由充分）\n'
+  const r = checkReuseSection(doc)
+  assert.equal(r.ok, true)
+  assert.match(r.reason, /逃逸|无复用/)
+})
+
+test('R6: 空节（无引用无逃逸）→ not ok', () => {
+  const doc = '## 复用评估\n- 随便写点东西\n'
+  const r = checkReuseSection(doc)
+  assert.equal(r.ok, false)
+})
+
+test('R7: buildRequest 携带 reuseCheck 字段', () => {
+  const req = buildRequest({ requestId: 'r1', title: 't', reuseCheck: { index: ['x'], awesome: [], github: [] } })
+  assert.deepEqual(req.reuseCheck, { index: ['x'], awesome: [], github: [] })
 })
