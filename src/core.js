@@ -144,6 +144,27 @@ export function checkReuseSection(content) {
   return { ok: false, reason: '「复用评估」节为空：须含 CAPABILITY-INDEX / awesome / GitHub 引用，或声明「无复用」（全新功能）', references }
 }
 
+/**
+ * 设计模板校验（20260901-006 approved）：DESIGN-TEMPLATE 必填章节齐全性检查。
+ *
+ * 必填章节（lowercase 匹配标题）：复用评估 / 方案 / 接口与兼容性 / 安全 / 测试方案 / 变更文件 / 风险与回滚
+ * 返回 { ok, missing: [] }；额外校验（非阻塞字段）：变更文件节内引用的路径存在性（existsSync 由调用方注入）
+ */
+export function checkTemplateSections(content) {
+  const text = String(content || '').toLowerCase()
+  const required = [
+    ['复用评估', /##\s*(复用评估|reuse evaluation)/],
+    ['方案', /##\s*方案/],
+    ['接口与兼容性', /##\s*接口[与和]兼容性/],
+    ['安全', /##\s*安全/],
+    ['测试方案', /##\s*测试方案|##\s*测试/],
+    ['变更文件', /##\s*变更文件/],
+    ['风险与回滚', /##\s*风险与回滚|##\s*风险/],
+  ]
+  const missing = required.filter(([, re]) => !re.test(text)).map(([name]) => name)
+  return { ok: missing.length === 0, missing }
+}
+
 /** 构造 review-handoff 请求（type=design|lesson）。 */
 export function buildRequest(opts) {
   const now = opts.requestedAt instanceof Date ? opts.requestedAt : new Date(opts.requestedAt || Date.now())

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, OWN_WRITE_MARKER,
 } from '../src/core.js'
 
 test('T1: 写入 *.design.md → 识别为设计文档', () => {
@@ -124,4 +124,34 @@ test('R6: 空节（无引用无逃逸）→ not ok', () => {
 test('R7: buildRequest 携带 reuseCheck 字段', () => {
   const req = buildRequest({ requestId: 'r1', title: 't', reuseCheck: { index: ['x'], awesome: [], github: [] } })
   assert.deepEqual(req.reuseCheck, { index: ['x'], awesome: [], github: [] })
+})
+
+// ── 20260901-006 approved：设计模板校验 checkTemplateSections ──
+test('T1: 模板章节齐全 → ok', () => {
+  const doc = [
+    '## 复用评估\n- CAPABILITY-INDEX 条目\n',
+    '## 方案\nx\n',
+    '## 接口与兼容性\nx\n',
+    '## 安全\nx\n',
+    '## 测试方案\nx\n',
+    '## 变更文件\nx\n',
+    '## 风险与回滚\nx\n',
+  ].join('')
+  const r = checkTemplateSections(doc)
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.missing, [])
+})
+
+test('T2: 缺「安全」与「变更文件」章 → missing 列出', () => {
+  const doc = '## 复用评估\nx\n## 方案\nx\n## 接口与兼容性\nx\n## 测试方案\nx\n## 风险与回滚\nx\n'
+  const r = checkTemplateSections(doc)
+  assert.equal(r.ok, false)
+  assert.ok(r.missing.includes('安全'))
+  assert.ok(r.missing.includes('变更文件'))
+})
+
+test('T3: 章节大小写不敏感', () => {
+  const doc = '## REUSE EVALUATION\nx\n## 方案\nx\n## 接口与兼容性\nx\n## 安全\nx\n## 测试\nx\n## 变更文件\nx\n## 风险\nx\n'
+  const r = checkTemplateSections(doc)
+  assert.equal(r.ok, true)
 })
