@@ -90,19 +90,26 @@ export function apply(ctx, rawConfig = {}) {
       return { ok: false, queued: false, note: '队列已有 pending review 任务（单槽），跳过' }
     }
     // 统一入队关卡（20260901-019 approved：gateByType——design=复用+模板；skill=仅复用；lesson=豁免）
+    // 20260901 修复：优先用 opts.content（write/edit 待写内容，拦截时文件可能未落盘——
+    // 新文件首次写入 existsSync=false 会绕过关卡）；无 content 才读文件
     let reuseCheck = { index: [], awesome: [], github: [] }
     try {
-      if ((opts.type === 'design' || opts.type === 'skill') && opts.docPath && existsSync(opts.docPath)) {
-        const content = readFileSync(opts.docPath, 'utf8')
-        const r = gateByType(opts.type, content)
-        if (!r.ok) {
-          audit({ ts: new Date().toISOString(), action: opts.type === 'skill' ? 'skill-reuse-reject' : 'reuse-reject', requestId, title: opts.title, reason: r.reason })
-          return {
-            ok: false, queued: false,
-            note: `提审被拒：${r.reason}${opts.type === 'skill' ? '（skill 文件须内嵌「## 复用评估」节：三查引用或「无复用」声明）' : '。请补充「## 复用评估」节（三查：CAPABILITY-INDEX / awesome / GitHub 引用；全新功能可声明「无复用」）。'}`,
-          }
+      if (opts.type === 'design' || opts.type === 'skill') {
+        let content = opts.content
+        if (content === undefined && opts.docPath && existsSync(opts.docPath)) {
+          content = readFileSync(opts.docPath, 'utf8')
         }
-        reuseCheck = r.references
+        if (content !== undefined) {
+          const r = gateByType(opts.type, content)
+          if (!r.ok) {
+            audit({ ts: new Date().toISOString(), action: opts.type === 'skill' ? 'skill-reuse-reject' : 'reuse-reject', requestId, title: opts.title, reason: r.reason })
+            return {
+              ok: false, queued: false,
+              note: `提审被拒：${r.reason}${opts.type === 'skill' ? '（skill 文件须内嵌「## 复用评估」节：三查引用或「无复用」声明）' : '。请补充「## 复用评估」节（三查：CAPABILITY-INDEX / awesome / GitHub 引用；全新功能可声明「无复用」）。'}`,
+            }
+          }
+          reuseCheck = r.references
+        }
       }
     } catch (e) {
       // fail-closed（20260901 教训：关卡异常时放行=被绕过，如 import 缺失 ReferenceError）
@@ -352,14 +359,16 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
       const filePath = args.file_path || args.file || args.filePath || args.path || ''
       // 自身写入豁免（防死循环）
       if (args.headers?.[OWN_WRITE_MARKER] === '1') return next()
-      // 读取文件做设计文档启发（003：readFileSync 全文；submit 内部关卡按全文判定）
-      let content = ''
-      try { content = readFileSync(filePath, 'utf8') } catch { /* 新文件 */ }
+      // 待写内容优先（20260901 修复：新文件首次写入时文件尚未落盘，readFileSync 读不到——
+      // 用 exec.arguments.content 做关卡判定，避免"新文件绕过"窗口）
+      const pendingContent = typeof args.content === 'string' ? args.content : ''
+      let content = pendingContent
+      if (!content) { try { content = readFileSync(filePath, 'utf8') } catch { /* 新文件 */ } }
       // 20260901-019 approved：isSkillDoc 优先（type=skill），否则 isDesignDoc（type=design）
-      const docType = isSkillDoc(filePath) ? 'skill' : (isDesignDoc(filePath, content.slice(0, 4000), config) ? 'design' : null)
+      const docType = isSkillDoc(filePath) ? 'skill' : (isDesignDoc(filePath, (content || '').slice(0, 4000), config) ? 'design' : null)
       if (!docType) return next()
       const sessionId = String(exec.agent.session.id || '')
-      const r = submit({ title: `[${docType}] ${path.basename(filePath)}`, docPath: filePath, changeFiles: [filePath], type: docType, sessionId })
+      const r = submit({ title: `[${docType}] ${path.basename(filePath)}`, docPath: filePath, changeFiles: [filePath], type: docType, sessionId, content: content || undefined })
       if (r.ok) {
         audit({ ts: new Date().toISOString(), action: 'auto-submit', requestId: r.requestId, file: filePath, sessionId, docType })
         if (config.mode === 'mandatory') {
