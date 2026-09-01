@@ -22,7 +22,7 @@ import { randomUUID } from 'node:crypto'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
   buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection,
-  checkTemplateSections, scanDefectPattern, OWN_WRITE_MARKER,
+  checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, OWN_WRITE_MARKER,
 } from './core.js'
 
 export const name = 'dsh-design-review'
@@ -89,29 +89,20 @@ export function apply(ctx, rawConfig = {}) {
       audit({ ts: new Date().toISOString(), action: 'skipped', title: opts.title })
       return { ok: false, queued: false, note: '队列已有 pending review 任务（单槽），跳过' }
     }
-    // 复用评估 + 设计模板关卡（003/006 approved：仅 design 类型；lesson 有独立文档结构）
+    // 统一入队关卡（20260901-019 approved：gateByType——design=复用+模板；skill=仅复用；lesson=豁免）
     let reuseCheck = { index: [], awesome: [], github: [] }
     try {
-      if (opts.type === 'design' && opts.docPath && existsSync(opts.docPath)) {
+      if ((opts.type === 'design' || opts.type === 'skill') && opts.docPath && existsSync(opts.docPath)) {
         const content = readFileSync(opts.docPath, 'utf8')
-        const r = checkReuseSection(content)
+        const r = gateByType(opts.type, content)
         if (!r.ok) {
-          audit({ ts: new Date().toISOString(), action: 'reuse-reject', requestId, title: opts.title, reason: r.reason })
+          audit({ ts: new Date().toISOString(), action: opts.type === 'skill' ? 'skill-reuse-reject' : 'reuse-reject', requestId, title: opts.title, reason: r.reason })
           return {
             ok: false, queued: false,
-            note: `提审被拒：${r.reason}。请补充「## 复用评估」节（三查：CAPABILITY-INDEX / awesome / GitHub 引用；全新功能可声明「无复用」）。`,
+            note: `提审被拒：${r.reason}${opts.type === 'skill' ? '（skill 文件须内嵌「## 复用评估」节：三查引用或「无复用」声明）' : '。请补充「## 复用评估」节（三查：CAPABILITY-INDEX / awesome / GitHub 引用；全新功能可声明「无复用」）。'}`,
           }
         }
         reuseCheck = r.references
-        // 20260901-006 approved：设计模板关卡——必填章节齐全性（DESIGN-TEMPLATE）
-        const t = checkTemplateSections(content)
-        if (!t.ok) {
-          audit({ ts: new Date().toISOString(), action: 'template-reject', requestId, title: opts.title, missing: t.missing })
-          return {
-            ok: false, queued: false,
-            note: `提审被拒：设计模板缺章 ${t.missing.join('、')}（见 ~/.dsh/DESIGN-TEMPLATE.md 必填 7 章）。`,
-          }
-        }
       }
     } catch (e) {
       // fail-closed（20260901 教训：关卡异常时放行=被绕过，如 import 缺失 ReferenceError）
@@ -364,20 +355,22 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
       // 读取文件做设计文档启发（003：readFileSync 全文；submit 内部关卡按全文判定）
       let content = ''
       try { content = readFileSync(filePath, 'utf8') } catch { /* 新文件 */ }
-      if (!isDesignDoc(filePath, content.slice(0, 4000), config)) return next()
+      // 20260901-019 approved：isSkillDoc 优先（type=skill），否则 isDesignDoc（type=design）
+      const docType = isSkillDoc(filePath) ? 'skill' : (isDesignDoc(filePath, content.slice(0, 4000), config) ? 'design' : null)
+      if (!docType) return next()
       const sessionId = String(exec.agent.session.id || '')
-      const r = submit({ title: `[design] ${path.basename(filePath)}`, docPath: filePath, changeFiles: [filePath], type: 'design', sessionId })
+      const r = submit({ title: `[${docType}] ${path.basename(filePath)}`, docPath: filePath, changeFiles: [filePath], type: docType, sessionId })
       if (r.ok) {
-        audit({ ts: new Date().toISOString(), action: 'auto-submit', requestId: r.requestId, file: filePath, sessionId })
+        audit({ ts: new Date().toISOString(), action: 'auto-submit', requestId: r.requestId, file: filePath, sessionId, docType })
         if (config.mode === 'mandatory') {
-          deliver(sessionId, `检测到设计文档写入: ${filePath}\n已提审 ${r.requestId}（评审 pending，暂缓实施该方案）`)
+          deliver(sessionId, `检测到${docType}文档写入: ${filePath}\n已提审 ${r.requestId}（评审 pending，暂缓实施）`)
         } else {
-          deliver(sessionId, `检测到设计文档写入: ${filePath}\n已提审 ${r.requestId}（advisory 通知）`)
+          deliver(sessionId, `检测到${docType}文档写入: ${filePath}\n已提审 ${r.requestId}（advisory 通知）`)
         }
-        startPolling(r.requestId, sessionId, path.basename(filePath), 'design')
+        startPolling(r.requestId, sessionId, path.basename(filePath), docType)
       } else {
-        // 003 approved：关卡拒绝不再静默——作者收到原因 + 三查提示（audit reuse-reject 已在 submit 内记录）
-        deliver(sessionId, `⚠️ 设计文档未通过复用评估关卡：${r.note}`)
+        // 003 approved：关卡拒绝不再静默——作者收到原因 + 三查提示（audit 已在 submit 内记录）
+        deliver(sessionId, `⚠️ ${docType}文档未通过复用评估关卡：${r.note}`)
       }
       return next()
     }, { prepend: true, global: true })
@@ -416,5 +409,5 @@ apply.inject = ['tools', 'agents', 'watchdog']
 export {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
   buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection,
-  checkTemplateSections, scanDefectPattern, OWN_WRITE_MARKER,
+  checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, OWN_WRITE_MARKER,
 } from './core.js'

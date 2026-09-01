@@ -97,6 +97,36 @@ export function isDesignDoc(filePath, firstLines, cfg = defaultConfig()) {
   return false
 }
 
+/**
+ * skill 文件识别（20260901-019 approved，方案 A v4）：
+ * - 规则 A：文件名恰为 SKILL.md（任意深度）
+ * - 规则 B：路径含 /skills/（带分隔符，防 myskills/ 误匹配）且文件名以 .skill.md 结尾
+ */
+export function isSkillDoc(filePath) {
+  const base = path.basename(filePath).toLowerCase()
+  if (base === 'skill.md') return true
+  return /[\/\\]skills[\/\\]/.test(filePath) && base.endsWith('.skill.md')
+}
+
+/**
+ * 统一入队关卡（20260901-019 approved）：
+ * - design：复用评估 + 设计模板（双检查）
+ * - skill：仅复用评估（SKILL.md 内嵌「## 复用评估」节；跳过 7 章模板）
+ * - lesson：豁免（独立文档结构）
+ * 返回 { ok, reason, references }（复用 checkReuseSection/checkTemplateSections，不新增函数）
+ */
+export function gateByType(type, content) {
+  if (type === 'skill') return checkReuseSection(content)
+  if (type === 'design') {
+    const r = checkReuseSection(content)
+    if (!r.ok) return r
+    const t = checkTemplateSections(content)
+    if (!t.ok) return { ok: false, reason: `设计模板缺章 ${t.missing.join('、')}（见 ~/.dsh/DESIGN-TEMPLATE.md 必填 7 章）`, references: r.references }
+    return r
+  }
+  return { ok: true, reason: 'lesson 豁免', references: { index: [], awesome: [], github: [] } }
+}
+
 /** 检查 review-handoff 目录当前是否有 pending 请求（单槽）。 */
 export function hasPendingRequest(req) {
   return Boolean(req && req.status === 'pending')

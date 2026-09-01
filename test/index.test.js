@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, scanDefectPattern, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, OWN_WRITE_MARKER,
 } from '../src/core.js'
 
 test('T1: 写入 *.design.md → 识别为设计文档', () => {
@@ -175,4 +175,47 @@ test('P1: 扫描命中含模式的行（排除 node_modules）', () => {
 
 test('P2: 空模式 → 空候选', () => {
   assert.deepEqual(scanDefectPattern('', ['/tmp']), [])
+})
+
+// ── 20260901-019 approved：skill 识别 S1-S4 + 统一关卡 I1-I4 ──
+test('S1: SKILL.md 文件名（任意深度）→ skill 文档', () => {
+  assert.equal(isSkillDoc('/a/b/SKILL.md'), true)
+  assert.equal(isSkillDoc('a/SKILL.md'), true)
+})
+
+test('S2: skills/ 下 .skill.md → skill 文档', () => {
+  assert.equal(isSkillDoc('a/skills/x/y.skill.md'), true)
+  assert.equal(isSkillDoc('/Users/x/Documents/Workspace/skills/vehicle-maintenance/SKILL.md'), true)
+})
+
+test('S3: 普通 .md → 非 skill', () => {
+  assert.equal(isSkillDoc('README.md'), false)
+  assert.equal(isSkillDoc('/a/b/note.md'), false)
+})
+
+test('S4: skills/ 下 soft-skills.md → 非 skill（后缀严格，防宽松回归）', () => {
+  assert.equal(isSkillDoc('a/skills/soft-skills.md'), false)
+  assert.equal(isSkillDoc('a/myskills/foo.skill.md'), false)  // 防 myskills/ 误匹配
+})
+
+test('I1: skill 含复用评估节 + 引用 → 通过', () => {
+  const r = gateByType('skill', '## 复用评估\n- CAPABILITY-INDEX 条目 x\n- github.com/foo\n')
+  assert.equal(r.ok, true)
+})
+
+test('I2: skill 无复用评估节 → 拒绝', () => {
+  const r = gateByType('skill', '# 技能说明\n直接写内容\n')
+  assert.equal(r.ok, false)
+  assert.match(r.reason, /复用评估/)
+})
+
+test('I3: skill 含「无复用」逃逸 → 通过', () => {
+  const r = gateByType('skill', '## 复用评估\n- 无复用：全新功能\n')
+  assert.equal(r.ok, true)
+})
+
+test('I4: design 缺模板章 → 拒绝（双关卡回归）', () => {
+  const r = gateByType('design', '## 复用评估\n- CAPABILITY-INDEX x\n## 方案\nx\n')
+  assert.equal(r.ok, false)
+  assert.match(r.reason, /模板缺章/)
 })
