@@ -88,10 +88,10 @@ export function apply(ctx, rawConfig = {}) {
       audit({ ts: new Date().toISOString(), action: 'skipped', title: opts.title })
       return { ok: false, queued: false, note: '队列已有 pending review 任务（单槽），跳过' }
     }
-    // 复用评估关卡（20260901-003 approved：读全文判定，勿用 firstLines 启发片段）
+    // 复用评估 + 设计模板关卡（003/006 approved：仅 design 类型；lesson 有独立文档结构）
     let reuseCheck = { index: [], awesome: [], github: [] }
     try {
-      if (opts.docPath && existsSync(opts.docPath)) {
+      if (opts.type === 'design' && opts.docPath && existsSync(opts.docPath)) {
         const content = readFileSync(opts.docPath, 'utf8')
         const r = checkReuseSection(content)
         if (!r.ok) {
@@ -102,6 +102,15 @@ export function apply(ctx, rawConfig = {}) {
           }
         }
         reuseCheck = r.references
+        // 20260901-006 approved：设计模板关卡——必填章节齐全性（DESIGN-TEMPLATE）
+        const t = checkTemplateSections(content)
+        if (!t.ok) {
+          audit({ ts: new Date().toISOString(), action: 'template-reject', requestId, title: opts.title, missing: t.missing })
+          return {
+            ok: false, queued: false,
+            note: `提审被拒：设计模板缺章 ${t.missing.join('、')}（见 ~/.dsh/DESIGN-TEMPLATE.md 必填 7 章）。`,
+          }
+        }
       }
     } catch (e) {
       audit({ ts: new Date().toISOString(), action: 'reuse-check-failed', requestId, error: String(e) })
