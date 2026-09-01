@@ -114,7 +114,12 @@ export function apply(ctx, rawConfig = {}) {
         }
       }
     } catch (e) {
-      audit({ ts: new Date().toISOString(), action: 'reuse-check-failed', requestId, error: String(e) })
+      // fail-closed（20260901 教训：关卡异常时放行=被绕过，如 import 缺失 ReferenceError）
+      audit({ ts: new Date().toISOString(), action: 'gate-check-failed', requestId, error: String(e).slice(0, 200) })
+      return {
+        ok: false, queued: false,
+        note: `提审被拒：关卡检查异常（${String(e).slice(0, 80)}）。请重试；若持续失败报告插件故障。`,
+      }
     }
     // 文档快照（013 建议 + 026：幂等双保险；消费端出队时也会落盘）
     try {
