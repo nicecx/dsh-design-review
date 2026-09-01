@@ -85,10 +85,22 @@ export function apply(ctx, rawConfig = {}) {
   const submit = (opts) => {
     ensureDir()
     const requestId = opts.requestId || nextRequestId()
-    if (queueHasPendingReview()) {
+    // 025 approved：入队必审——queueMode=queue（默认）时排队不拒绝；'skip' 保留兼容旧配置
+    const pendingCount = readQueue().filter((t) => t.tier === 'review' && (t.status === 'queued' || t.status === 'processing')).length
+    if (config.queueMode === 'skip' && pendingCount > 0) {
       audit({ ts: new Date().toISOString(), action: 'skipped', title: opts.title })
       return { ok: false, queued: false, note: '队列已有 pending review 任务（单槽），跳过' }
     }
+    // ETA 基线（025 approved：与 Hermes 商量——实测 result 历史耗时均值，随提审可核对）
+    let etaMin = 25
+    try {
+      const res = readJson(path.join(reviewDir, 'result.json'))
+      const req = readJson(path.join(reviewDir, 'request.json'))
+      if (res && req && res.requestId === req.requestId && req.ts) {
+        const dur = (Date.parse(res.ts || Date.now()) - Date.parse(req.ts)) / 60000
+        if (dur > 0) etaMin = Math.round(dur)
+      }
+    } catch { /* 基线缺失用默认 */ }
     // 统一入队关卡（20260901-019 approved：gateByType——design=复用+模板；skill=仅复用；lesson=豁免）
     // 20260901-021 approved：pickGateContent——待写内容优先（新文件首次写入未落盘，防绕过窗口）
     let reuseCheck = { index: [], awesome: [], github: [] }
@@ -154,7 +166,9 @@ export function apply(ctx, rawConfig = {}) {
     q.push(task)
     writeQueue(q)
     audit({ ts: now, action: 'enqueue', requestId, type: task.payload.type, title: opts.title })
-    return { ok: true, requestId, queued: false }
+    // 025 approved：排队位置 + ETA（入队必审，永不拒绝）
+    const pos = q.filter((t) => t.tier === 'review' && (t.status === 'queued' || t.status === 'processing')).length
+    return { ok: true, requestId, queued: pos > 1, queuePos: pos, etaMin }
   }
 
   /**
@@ -269,7 +283,7 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
         const r = submit({ title: args.title, docPath: args.docPath, changeFiles: args.changeFiles || [], tests: args.tests, type: 'design', sessionId })
         if (!r.ok) return `⚠️ ${r.note}`
         startPolling(r.requestId, sessionId, args.title, 'design')
-        return `✅ 已入队 ${r.requestId}（tier=review，消费端出队后写 review-handoff）\n文档: ${args.docPath}\n结论将注入本会话。`
+        return `✅ 已入队 ${r.requestId}（tier=review，第 ${r.queuePos} 位，预计等待 ~${(r.queuePos - 1) * r.etaMin}min）\n文档: ${args.docPath}\n结论将注入本会话。`
       },
     },
     {
