@@ -173,7 +173,7 @@ export function checkTemplateSections(content) {
  * 返回候选清单 [{ file, line, context }]（供发起 agent 复核，不入队）。
  * 注意：本函数只产出候选——修复任务必须经复核后由 agent 显式提审（tier=review 互审）。
  */
-export function scanDefectPattern(pattern, roots, exclude = /(node_modules|\.git\/|\.bak|__pycache__|\.pyc|\.png|\.jpg|\.zip)/i) {
+export function scanDefectPattern(pattern, roots, exclude = /(node_modules|\.git\/|\.bak|__pycache__|\.pyc|\.png|\.jpg|\.zip|review-handoff[\/\\]docs)/i) {
   const pat = String(pattern || '').trim().toLowerCase()
   if (!pat) return []
   const hits = []
