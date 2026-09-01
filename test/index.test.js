@@ -1,8 +1,11 @@
 import { test } from 'node:test'
+import os from 'node:os'
+import path from 'node:path'
+import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, scanDefectPattern, OWN_WRITE_MARKER,
 } from '../src/core.js'
 
 test('T1: 写入 *.design.md → 识别为设计文档', () => {
@@ -154,4 +157,22 @@ test('T3: 章节大小写不敏感', () => {
   const doc = '## REUSE EVALUATION\nx\n## 方案\nx\n## 接口与兼容性\nx\n## 安全\nx\n## 测试\nx\n## 变更文件\nx\n## 风险\nx\n'
   const r = checkTemplateSections(doc)
   assert.equal(r.ok, true)
+})
+
+// ── 20260901-006 approved：缺陷模式扫描 scanDefectPattern ──
+test('P1: 扫描命中含模式的行（排除 node_modules）', () => {
+  const td = fs.mkdtempSync(path.join(os.tmpdir(), 'prop-'))
+  fs.mkdirSync(path.join(td, 'src'), { recursive: true })
+  fs.mkdirSync(path.join(td, 'node_modules'), { recursive: true })
+  fs.writeFileSync(path.join(td, 'src', 'a.js'), 'const x = launchctl kickstart -k\n')
+  fs.writeFileSync(path.join(td, 'src', 'b.py'), 'normal line\n')
+  fs.writeFileSync(path.join(td, 'node_modules', 'bad.js'), 'launchctl kickstart -k\n')
+  const hits = scanDefectPattern('kickstart -k', [td])
+  assert.ok(hits.some((h) => h.file.includes('a.js')), '应命中 a.js')
+  assert.ok(!hits.some((h) => h.file.includes('node_modules')), '应排除 node_modules')
+  fs.rmSync(td, { recursive: true, force: true })
+})
+
+test('P2: 空模式 → 空候选', () => {
+  assert.deepEqual(scanDefectPattern('', ['/tmp']), [])
 })

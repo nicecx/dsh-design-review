@@ -203,6 +203,28 @@ export function apply(ctx, rawConfig = {}) {
             } else {
               audit({ ts: new Date().toISOString(), action: 'guardrail-conflict', requestId, conflicts })
             }
+            // 20260901-006 approved：lesson 跨 agent 传播（P1）——若 lesson 声明缺陷模式，
+            // 扫描全机产出候选清单（限定 ~/.dsh + Workspace/dsh-*），交付发起会话复核。
+            // 复核后由 agent 显式提审修复（tier=review 互审，禁止自动应用）。
+            try {
+              const docPath = path.join(reviewDir, 'docs', `${requestId}.md`)
+              const doc = existsSync(docPath) ? readFileSync(docPath, 'utf8') : ''
+              const m = doc.match(/##\s*缺陷模式[^\n]*\n([^\n]+)/)
+              const pattern = m ? m[1].trim() : ''
+              if (pattern) {
+                const roots = [
+                  path.join(os.homedir(), '.dsh'),
+                  path.join(os.homedir(), 'Documents', 'Workspace'),
+                ]
+                const candidates = scanDefectPattern(pattern, roots)
+                audit({ ts: new Date().toISOString(), action: 'prop-scan', requestId, pattern, hits: candidates.length })
+                deliver(sessionId, `🧬 lesson 传播扫描（${requestId}）：模式「${pattern}」命中 ${candidates.length} 处候选（前 10 条）：
+${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join('\n') || '（无）'}
+请逐项复核（排除假阳性），确认真命中后按正常提审流程提交修复方案（tier=review 互审）。`)
+              }
+            } catch (e) {
+              audit({ ts: new Date().toISOString(), action: 'prop-scan-failed', requestId, error: String(e) })
+            }
           }
           return
         }
@@ -251,6 +273,7 @@ export function apply(ctx, rawConfig = {}) {
           incident: { type: 'string', description: 'What happened' },
           rootCause: { type: 'string', description: 'Root cause' },
           lesson: { type: 'string', description: 'Proposed preventive measure' },
+          defectPattern: { type: 'string', description: 'Defect pattern keyword for cross-agent propagation scan (optional, 006 approved: e.g. "kickstart -k")' },
           impact: { type: 'string', description: 'Impact (optional)' },
           reproducible: { type: 'string', description: 'Is it reproducible (optional)' },
         },
@@ -273,14 +296,15 @@ export function apply(ctx, rawConfig = {}) {
           `## 事故\n${args.incident}`,
           `## 根因\n${args.rootCause}`,
           `## 教训（拟防复发措施）\n${args.lesson}`,
+          args.defectPattern ? `## 缺陷模式（传播扫描）\n${args.defectPattern}` : '',
           args.impact ? `## 影响面\n${args.impact}` : '',
           args.reproducible ? `## 可复现性\n${args.reproducible}` : '',
         ].filter(Boolean).join('\n')
         writeFileSync(docPath, content)
-        const r = submit({ title: `[lesson] ${args.title}`, docPath, changeFiles: [docPath], tests: '', type: 'lesson', sessionId })
+        const r = submit({ title: `[lesson] ${args.title}`, docPath, changeFiles: [docPath], tests: '', type: 'lesson', sessionId, defectPattern: args.defectPattern || '' })
         if (!r.ok) return `⚠️ ${r.note}`
         startPolling(r.requestId, sessionId, args.title, 'lesson')
-        return `✅ 已入队 ${r.requestId}（type=lesson）\napproved 后将防复发措施追加到 OPS-GUARDRAILS.md。`
+        return `✅ 已入队 ${r.requestId}（type=lesson）\napproved 后将防复发措施追加到 OPS-GUARDRAILS.md${args.defectPattern ? '，并按缺陷模式做传播扫描。' : '。'}`
       },
     },
     {

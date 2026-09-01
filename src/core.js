@@ -9,6 +9,7 @@
  */
 
 import path from 'node:path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 
 /** 默认识别 patterns（收窄版，005 审核意见 6）。 */
 export function defaultPatterns() {
@@ -163,6 +164,41 @@ export function checkTemplateSections(content) {
   ]
   const missing = required.filter(([, re]) => !re.test(text)).map(([name]) => name)
   return { ok: missing.length === 0, missing }
+}
+
+/**
+ * 缺陷模式全机扫描（20260901-006 approved，lesson 跨 agent 传播 P1）。
+ *
+ * 限定根目录扫描（避免系统库海量候选），排除 node_modules/.git/备份/二进制；
+ * 返回候选清单 [{ file, line, context }]（供发起 agent 复核，不入队）。
+ * 注意：本函数只产出候选——修复任务必须经复核后由 agent 显式提审（tier=review 互审）。
+ */
+export function scanDefectPattern(pattern, roots, exclude = /(node_modules|\.git\/|\.bak|__pycache__|\.pyc|\.png|\.jpg|\.zip)/i) {
+  const pat = String(pattern || '').trim().toLowerCase()
+  if (!pat) return []
+  const hits = []
+  const walk = (dir, depth) => {
+    if (depth > 6) return
+    let entries
+    try { entries = readdirSync(dir) } catch { return }
+    for (const name of entries) {
+      const p = path.join(dir, name)
+      if (exclude.test(p)) continue
+      let st
+      try { st = statSync(p) } catch { continue }
+      if (st.isDirectory()) { walk(p, depth + 1); continue }
+      if (!/\.(js|mjs|cjs|ts|py|sh|yml|yaml|json|md)$/i.test(name)) continue
+      let lines
+      try { lines = String(readFileSync(p, 'utf8')).split('\n') } catch { continue }
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].toLowerCase().includes(pat)) {
+          hits.push({ file: p, line: i + 1, context: lines[i].trim().slice(0, 120) })
+        }
+      }
+    }
+  }
+  for (const root of roots || []) walk(root, 0)
+  return hits
 }
 
 /** 构造 review-handoff 请求（type=design|lesson）。 */
