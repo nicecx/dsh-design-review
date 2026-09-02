@@ -270,6 +270,20 @@ export function scanDefectPattern(pattern, roots, exclude = /(node_modules|\.git
   return hits
 }
 
+/**
+ * 035 approved 措施②：解析 PROTOCOL.md 的 type 枚举（锚点读文件，防硬编码漂移）。
+ * 宽松解析：取含 "`type`:" 的行，收集行内出现的已知类型词；
+ * 行缺失/无匹配时返回已知全集（design/lesson/skill/arbitration），保守放行。
+ */
+export function parseProtocolTypes(text, fallback = ['design', 'lesson', 'skill', 'arbitration']) {
+  const known = ['design', 'lesson', 'skill', 'arbitration']
+  if (!text) return fallback
+  const line = String(text).split('\n').find((l) => l.includes('`type`:'))
+  if (!line) return fallback
+  const found = known.filter((t) => line.includes(t))
+  return found.length > 0 ? found : fallback
+}
+
 /** 构造 review-handoff 请求（type=design|lesson）。 */
 export function buildRequest(opts) {
   const now = opts.requestedAt instanceof Date ? opts.requestedAt : new Date(opts.requestedAt || Date.now())

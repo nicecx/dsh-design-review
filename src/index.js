@@ -23,7 +23,7 @@ import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
   buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection,
   checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent,
-  isGitPushCmd, isTestCmd, isPrecheckCmd, OWN_WRITE_MARKER,
+  isGitPushCmd, isTestCmd, isPrecheckCmd, parseProtocolTypes, OWN_WRITE_MARKER,
 } from './core.js'
 
 export const name = 'dsh-design-review'
@@ -45,6 +45,8 @@ export function apply(ctx, rawConfig = {}) {
   const docsDir = path.join(reviewDir, 'docs')
 
   const ensureDir = () => mkdirSync(reviewDir, { recursive: true })
+  /** 035 非阻塞⑤：auto-submit 短窗口去重表（key=path|docType|sessionId → lastTs） */
+  const autoSubmitRecent = new Map()
   const audit = (entry) => {
     try {
       mkdirSync(path.dirname(logPath), { recursive: true })
@@ -122,9 +124,29 @@ export function apply(ctx, rawConfig = {}) {
    * 提审（阶段 3 入队版）：复用评估关卡（003 approved）→ 文档快照 → 入队 task-queue。
    * 关卡：文档含「复用评估」节且命中引用/逃逸声明，否则拒绝入队（note 给作者三查提示）。
    */
+  /**
+   * 035 approved 措施②（DSH 侧实施）：提审 type 归属校验——
+   * 锚点 = PROTOCOL.md 的 type 枚举（parseProtocolTypes 读文件不硬编码，防再次漂移）；
+   * 无归属 type 拒绝入队并落审计（rejected-unowned），使提审方可感知并改提正确类型。
+   */
+  const protocolTypes = () => {
+    try {
+      const protoPath = path.join(reviewDir, 'PROTOCOL.md')
+      if (!existsSync(protoPath)) return ['design', 'lesson', 'skill', 'arbitration'] // 文件缺失时保守放行已知全集
+      return parseProtocolTypes(readFileSync(protoPath, 'utf8'))
+    } catch { return ['design', 'lesson', 'skill', 'arbitration'] }
+  }
+
   const submit = (opts) => {
     ensureDir()
     const requestId = opts.requestId || nextRequestId()
+    // 035 approved 措施②：type 归属校验（防 027-034 无 monitor 认领卡死单槽重演）
+    const reqType = opts.type || 'design'
+    const known = protocolTypes()
+    if (!known.includes(reqType)) {
+      audit({ ts: new Date().toISOString(), action: 'rejected-unowned', requestId, title: opts.title, type: reqType, reason: `type=${reqType} 不在 PROTOCOL 枚举 ${JSON.stringify(known)} 内，无 monitor 认领——拒绝入队` })
+      return { ok: false, queued: false, note: `提审被拒：type=${reqType} 无归属（PROTOCOL 枚举: ${known.join('/')}）。请改提 design/lesson/skill/arbitration。` }
+    }
     // 025 approved：入队必审——queueMode=queue（默认）时排队不拒绝；'skip' 保留兼容旧配置
     const pendingCount = readQueue().filter((t) => t.tier === 'review' && (t.status === 'queued' || t.status === 'processing')).length
     if (config.queueMode === 'skip' && pendingCount > 0) {
@@ -426,6 +448,17 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
       const docType = isSkillDoc(filePath) ? 'skill' : (isDesignDoc(filePath, (content || '').slice(0, 4000), config) ? 'design' : null)
       if (!docType) return next()
       const sessionId = String(exec.agent.session.id || '')
+      // 035 approved 非阻塞⑤：同 path+docType 短窗口去重（5s）——一次 SKILL.md 修改多次
+      // write/edit 事件只提审一次，防 027-034 八连提审重演（放大因子=每次写入触发一次 auto-submit）
+      const dedupKey = `${filePath}|${docType}|${sessionId}`
+      const dedupNow = Date.now()
+      const lastAuto = autoSubmitRecent.get(dedupKey)
+      if (lastAuto && dedupNow - lastAuto < 5000) return next()
+      autoSubmitRecent.set(dedupKey, dedupNow)
+      // 防 Map 无限增长：只保留 60s 内条目
+      for (const [k, t] of autoSubmitRecent) {
+        if (dedupNow - t > 60000) autoSubmitRecent.delete(k)
+      }
       const r = submit({ title: `[${docType}] ${path.basename(filePath)}`, docPath: filePath, changeFiles: [filePath], type: docType, sessionId, content: content || undefined })
       if (r.ok) {
         audit({ ts: new Date().toISOString(), action: 'auto-submit', requestId: r.requestId, file: filePath, sessionId, docType })

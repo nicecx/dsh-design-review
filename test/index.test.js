@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
   buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent,
-  isGitPushCmd, isTestCmd, isPrecheckCmd, OWN_WRITE_MARKER,
+  isGitPushCmd, isTestCmd, isPrecheckCmd, parseProtocolTypes, OWN_WRITE_MARKER,
 } from '../src/core.js'
 
 test('T1: 写入 *.design.md → 识别为设计文档', () => {
@@ -270,4 +270,25 @@ test('P5: gitPushGate 配置默认关闭且可启用', () => {
   assert.equal(d.gitPushGate, false)
   assert.equal(d.testRunWindowMin, 30)
   assert.equal(validateConfig({ ...d, gitPushGate: true }).ok, true)
+})
+
+// 035 措施②：parseProtocolTypes 锚点解析
+test('G1: parseProtocolTypes 从 PROTOCOL type 行解析枚举', () => {
+  const proto = `- \`type\`: **design**(默认,向后兼容)| lesson | skill(v1.3)。design 审方案可行性...`
+  const types = parseProtocolTypes(proto)
+  assert.ok(types.includes('design'))
+  assert.ok(types.includes('lesson'))
+  assert.ok(types.includes('skill'))
+})
+
+test('G2: parseProtocolTypes 无 type 行/空文本 → fallback 全集', () => {
+  assert.deepEqual(parseProtocolTypes(''), ['design', 'lesson', 'skill', 'arbitration'])
+  assert.deepEqual(parseProtocolTypes('no type line here'), ['design', 'lesson', 'skill', 'arbitration'])
+})
+
+test('G3: parseProtocolTypes 不含某类型 → 该类型不在枚举（防漂移可感知）', () => {
+  const proto = '- `type`: **design** | **lesson**。'  // 模拟旧版无 skill
+  const types = parseProtocolTypes(proto)
+  assert.ok(!types.includes('skill'))
+  assert.ok(types.includes('design'))
 })
