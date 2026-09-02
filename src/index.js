@@ -22,7 +22,8 @@ import { randomUUID } from 'node:crypto'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
   buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection,
-  checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent, OWN_WRITE_MARKER,
+  checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent,
+  isGitPushCmd, isTestCmd, isPrecheckCmd, OWN_WRITE_MARKER,
 } from './core.js'
 
 export const name = 'dsh-design-review'
@@ -49,6 +50,45 @@ export function apply(ctx, rawConfig = {}) {
       mkdirSync(path.dirname(logPath), { recursive: true })
       appendFileSync(logPath, JSON.stringify(entry) + '\n')
     } catch { /* 审计失败不阻断 */ }
+  }
+
+  /** 019：design-review.log 尾部窗口内是否存在指定 action 记录（sessionId + repo 归属）。 */
+  const recentAudit = (action, sessionId, repo, windowMs) => {
+    try {
+      const lines = existsSync(logPath) ? readFileSync(logPath, 'utf8').split('\n').slice(-200) : []
+      const now = Date.now()
+      for (const l of lines) {
+        if (!l) continue
+        try {
+          const d = JSON.parse(l)
+          if (d.action !== action) continue
+          if (sessionId && d.sessionId && d.sessionId !== sessionId) continue
+          if (repo && d.repo && !String(d.repo).includes(String(repo).split('/').pop())) continue
+          const ts = Date.parse(d.ts || 0)
+          if (!Number.isNaN(ts) && now - ts <= windowMs) return true
+        } catch { /* 跳过坏行 */ }
+      }
+    } catch { /* 读失败按无记录 */ }
+    return false
+  }
+
+  /** 019：收录类判定（upstream diff 含 data/plugins；upstream 不可解析 → fail-closed 按收录类）。 */
+  const isCatalogPush = async (repo) => {
+    try {
+      const { execFile } = await import('node:child_process')
+      const { promisify } = await import('node:util')
+      const run = promisify(execFile)
+      const dir = repo || '.'
+      let out
+      try {
+        out = await run('git', ['diff', '--name-only', '@{upstream}...HEAD', '--', 'data/plugins/'], { cwd: dir, timeout: 5000 })
+      } catch {
+        return true // upstream 不可解析 → fail-closed（按收录类要求预检）
+      }
+      return String(out.stdout || '').trim().length > 0
+    } catch {
+      return true
+    }
   }
   const readJson = (p) => {
     try { return existsSync(p) ? JSON.parse(readFileSync(p, 'utf8')) : null } catch { return null }
@@ -402,6 +442,50 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
       return next()
     }, { prepend: true, global: true })
 
+    // 20260902-019 approved：Git push 关卡（护栏+审计）——bash 工具拦截
+    const offPush = ctx.on('tools/execute', async (exec, next) => {
+      if (!config.gitPushGate) return next()
+      if (exec?.name !== 'bash') return next()
+      if (exec?.agent === undefined) return next()
+      const args = exec.arguments ?? {}
+      const cmd = String(args.command || args.cmd || '')
+      const sessionId = String(exec.agent.session.id || '')
+      const repo = String(args.cwd || exec.agent.session?.cwd || '')
+      const now = Date.now()
+
+      // 测试/预检命令登记（await next 观察结果：成功记 test-run，失败记 test-fail）
+      if (isTestCmd(cmd) || isPrecheckCmd(cmd)) {
+        const res = await next()
+        const ok = !(res && (res.isError || res.exitCode > 0))
+        const action = isPrecheckCmd(cmd) ? (ok ? 'gate-precheck' : 'gate-precheck-fail') : (ok ? 'test-run' : 'test-fail')
+        audit({ ts: new Date().toISOString(), action, sessionId, repo, cmd: cmd.slice(0, 200) })
+        return res
+      }
+
+      // git push 检查
+      if (isGitPushCmd(cmd)) {
+        const win = (config.testRunWindowMin || 30) * 60000
+        const pwin = (config.precheckWindowMin || 30) * 60000
+        let ok = true, why = ''
+        // 测试成功记录（本会话 + 同 repo）
+        if (!recentAudit('test-run', sessionId, repo, win)) { ok = false; why = '近 ' + (win/60000) + ' 分钟无测试成功记录（test-run）' }
+        else {
+          const fail = recentAudit('test-fail', sessionId, repo, win)
+          if (fail) { ok = false; why = '最近测试失败（test-fail），请先修复' }
+        }
+        // 收录类：upstream diff 含 data/plugins → 需 gate-precheck
+        if (ok && await isCatalogPush(repo)) {
+          if (!recentAudit('gate-precheck', sessionId, repo, pwin)) { ok = false; why = '收录类 push 缺本地 gate 预检（gate-precheck）' }
+        }
+        audit({ ts: new Date().toISOString(), action: ok ? 'push-allowed' : 'push-blocked', sessionId, repo, cmd: cmd.slice(0, 300) })
+        if (!ok) {
+          const text = `⚠️ Git push 被拦（护栏）：${why}\n请按 git-submit-practice 流程：① 测试先行（node --test / python3 test 全绿）② 收录类先跑本地 gate 预检（check-submission.mjs）③ 再 push。`
+          return { isError: true, error: text, content: [{ type: 'text', text }] }
+        }
+      }
+      return next()
+    }, { prepend: true, global: true })
+
     // watchdog 登记轮询心跳（非裸 setTimeout，响应 004 意见 4）
     let watchdogHandle
     try {
@@ -419,6 +503,7 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
     return () => {
       for (const d of disposers) d()
       offExec?.()
+      offPush?.()
       if (watchdogHandle) try { ctx.watchdog?.unregister?.(watchdogHandle) } catch { /* 忽略 */ }
     }
   }, 'dsh-design-review: intercept')

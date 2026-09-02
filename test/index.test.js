@@ -5,7 +5,8 @@ import fs from 'node:fs'
 import assert from 'node:assert/strict'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
-  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent, OWN_WRITE_MARKER,
+  buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent,
+  isGitPushCmd, isTestCmd, isPrecheckCmd, OWN_WRITE_MARKER,
 } from '../src/core.js'
 
 test('T1: 写入 *.design.md → 识别为设计文档', () => {
@@ -234,4 +235,39 @@ test('G2: 无 content 且文件存在 → 读文件', () => {
 test('G3: 无 content 且文件不存在 → undefined（调用方跳过检查）', () => {
   const r = pickGateContent({ docPath: '/x/y.md', existsSync: () => false })
   assert.equal(r, undefined)
+})
+
+// ── 20260902-019 approved：Git push 关卡判定纯函数 ──
+test('P1: git push 命令识别（含 git -C 与链式）', () => {
+  assert.equal(isGitPushCmd('git push origin main'), true)
+  assert.equal(isGitPushCmd('git -C /x/y push -f'), true)
+  assert.equal(isGitPushCmd('cd /x && git push'), true)
+  assert.equal(isGitPushCmd('git push; echo done'), true)
+})
+
+test('P2: commit/其他 git 命令不拦', () => {
+  assert.equal(isGitPushCmd('git commit -m x'), false)
+  assert.equal(isGitPushCmd('git status'), false)
+  assert.equal(isGitPushCmd('git log'), false)
+})
+
+test('P3: 测试命令识别', () => {
+  assert.equal(isTestCmd('node --test test/index.test.js'), true)
+  assert.equal(isTestCmd('python3 test/consumer.test.py'), true)
+  assert.equal(isTestCmd('python3 -m unittest'), true)
+  assert.equal(isTestCmd('pytest -q'), true)
+  assert.equal(isTestCmd('npm test'), true)
+  assert.equal(isTestCmd('git push'), false)
+})
+
+test('P4: 预检命令识别', () => {
+  assert.equal(isPrecheckCmd('node scripts/check-submission.mjs --base main'), true)
+  assert.equal(isPrecheckCmd('git push'), false)
+})
+
+test('P5: gitPushGate 配置默认关闭且可启用', () => {
+  const d = defaultConfig()
+  assert.equal(d.gitPushGate, false)
+  assert.equal(d.testRunWindowMin, 30)
+  assert.equal(validateConfig({ ...d, gitPushGate: true }).ok, true)
 })

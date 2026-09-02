@@ -35,7 +35,10 @@ export function defaultConfig() {
     patterns: defaultPatterns(),
     keywords: defaultKeywords(),
     queueMode: 'skip',       // skip（默认，安全）| queue（显式排队）
-    gitGate: false,          // mandatory 加强：评审通过前禁止 git 提交（默认关）
+    gitGate: false,          // mandatory 加强：评审通过前禁止 git 提交（默认关，语义保留不动）
+    gitPushGate: false,      // 20260902-019 approved：push 前测试先行关卡（护栏+审计，cordis 显式启用）
+    testRunWindowMin: 30,    // 019：test-run/gate-precheck 记录有效窗口（分钟，可配置）
+    precheckWindowMin: 30,   // 019：收录类本地 gate 预检窗口（可独立缩短）
     reviewDir: undefined,    // 默认 ~/.dsh/review-handoff/
     guardrailsPath: undefined, // 默认 ~/.dsh/OPS-GUARDRAILS.md
     logPath: undefined,      // 默认 ~/.dsh/design-review.log
@@ -43,6 +46,29 @@ export function defaultConfig() {
 }
 
 /** 校验配置。 */
+/**
+ * 019 approved 判定纯函数（gitPushGate 护栏+审计）：
+ * - isGitPushCmd(cmd): 命令含 git push（覆盖 git -C <dir> push 与链式 &&/;）
+ * - isTestCmd(cmd): 命令运行测试（node --test / python3 *test*.py / pytest / npm test）
+ * - isPrecheckCmd(cmd): 命令含 check-submission.mjs
+ * 返回 true/false（护栏判定用，非安全边界——bash 字符串可绕，靠审计回溯问责）
+ */
+export function isGitPushCmd(cmd) {
+  const c = String(cmd || '')
+  // 分号/&& 链式拆段检查（覆盖 git -C <dir> push; git push 等组合）
+  const segs = c.split(/[;&]|&&|\|\|/).map((s) => s.trim())
+  return segs.some((s) => /\bgit(\s+-C\s+\S+)?\s+push\b/.test(s))
+}
+
+export function isTestCmd(cmd) {
+  const c = String(cmd || '')
+  return /node\s+--test|python3?\s+[^|]*test|pytest|npm\s+test|unittest/.test(c)
+}
+
+export function isPrecheckCmd(cmd) {
+  return /check-submission\.mjs/.test(String(cmd || ''))
+}
+
 export function validateConfig(cfg) {
   if (!cfg || typeof cfg !== 'object') return { ok: false, error: 'config 必须是对象' }
   if (cfg.mode !== undefined && !['advisory', 'mandatory', 'off'].includes(cfg.mode)) {
