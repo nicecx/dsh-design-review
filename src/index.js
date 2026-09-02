@@ -128,12 +128,18 @@ export function apply(ctx, rawConfig = {}) {
       }
     }
     // 文档快照（013 建议 + 026：幂等双保险；消费端出队时也会落盘）
+    // 20260902 修复：快照同样受"新文件未落盘"影响（021 只修了关卡检查）——
+    // 新文件首写时 existsSync=false → 快照静默跳过 → docs 空洞 → 取号错位（007 lesson 洞）
     try {
       if (opts.docPath) {
         mkdirSync(docsDir, { recursive: true })
         const dst = path.join(docsDir, `${requestId}.md`)
-        if (path.resolve(opts.docPath) !== path.resolve(dst) && existsSync(opts.docPath)) {
-          copyFileSync(opts.docPath, dst)
+        if (path.resolve(opts.docPath) !== path.resolve(dst)) {
+          if (opts.content !== undefined) {
+            writeFileSync(dst, opts.content)  // 待写内容优先（防新文件未落盘）
+          } else if (existsSync(opts.docPath)) {
+            copyFileSync(opts.docPath, dst)
+          }
         }
       }
     } catch (e) {
