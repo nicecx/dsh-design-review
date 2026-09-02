@@ -74,3 +74,7 @@ dsh plugin --profile <profile> add github:nicecx/dsh-design-review
 ## License
 
 MIT
+
+## 联动（20260902-003 approved，独立部署·协议联动）
+
+与 dsh-task-queue（队列中枢）联动：设计文档/lesson auto-submit 入队 review tier → 消费端出队 → 单槽检查写 request.json → Hermes 审核 → 结论按 sessionId 路由回发起会话；approved 守则追加 OPS-GUARDRAILS + 缺陷模式传播扫描。详见协作契约「二·五 架构总览」。
