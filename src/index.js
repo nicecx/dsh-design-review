@@ -109,6 +109,8 @@ export function apply(ctx, rawConfig = {}) {
     readQueue().some((t) => t.tier === 'review' && (t.status === 'queued' || t.status === 'processing'))
   const nextRequestId = () => {
     // 007 lesson 单一编号源：扫 docs/ 当天最大号 +1（不再读 request.json——入队模式滞后）
+    // 20260903-010 approved（撞号 lesson）：补查 queue.json 全部条目 payload.requestId
+    // （含 done/failed 终态——防归档后号回收复撞）；手动指定号未落盘 docs 时不再撞
     const today = new Date().toISOString().slice(0, 10).replace(/-/g, '')
     let maxN = 0
     try {
@@ -117,6 +119,13 @@ export function apply(ctx, rawConfig = {}) {
         if (m) maxN = Math.max(maxN, Number(m[1]))
       }
     } catch { /* docs 不存在 */ }
+    try {
+      for (const t of readQueue()) {
+        const rid = String((t.payload || {}).requestId || '')
+        const m = rid.match(new RegExp(`^${today}-(\\d+)$`))
+        if (m) maxN = Math.max(maxN, Number(m[1]))
+      }
+    } catch { /* 队列读失败忽略（docs 为兜底） */ }
     return `${today}-${String(maxN + 1).padStart(3, '0')}`
   }
 
@@ -197,6 +206,21 @@ export function apply(ctx, rawConfig = {}) {
         mkdirSync(docsDir, { recursive: true })
         const dst = path.join(docsDir, `${requestId}.md`)
         if (path.resolve(opts.docPath) !== path.resolve(dst)) {
+          // 20260903-010 approved（撞号 lesson）措施③：docs 覆盖告警——
+          // dst 已存在且将写内容与现内容不同 = 异源覆盖（撞号材料被挤）→ 审计告警；
+          // 同内容重写（同源修订重提快照幂等）不告警（合法场景）
+          let incoming = ''
+          try {
+            incoming = opts.content !== undefined ? opts.content : (existsSync(opts.docPath) ? readFileSync(opts.docPath, 'utf8') : '')
+          } catch { /* 读失败跳过比对 */ }
+          if (incoming !== '') {
+            try {
+              const existing = existsSync(dst) ? readFileSync(dst, 'utf8') : null
+              if (existing !== null && existing !== incoming) {
+                audit({ ts: new Date().toISOString(), action: 'docs-overwrite', requestId, dst, note: '异源内容覆盖既有 docs 快照（疑似撞号）——原快照: ' + String(existing.length) + 'B → 新: ' + String(incoming.length) + 'B' })
+              }
+            } catch { /* 比对失败不阻断写入 */ }
+          }
           if (opts.content !== undefined) {
             writeFileSync(dst, opts.content)  // 待写内容优先（防新文件未落盘）
           } else if (existsSync(opts.docPath)) {
