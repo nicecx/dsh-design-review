@@ -346,7 +346,9 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
                   mkdirSync(plDir, { recursive: true })
                   const slug = pattern.replace(/[^a-z0-9-]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '') || 'lesson-' + requestId
                   const pbPath = path.join(plDir, `${slug}.md`)
-                  const today = new Date().toISOString().slice(0, 10)
+                  // 020 非阻塞②落实：本地日期（toISOString 为 UTC——北京时间 00:00-08:00 差一天）
+                  const nowD = new Date()
+                  const today = `${nowD.getFullYear()}-${String(nowD.getMonth() + 1).padStart(2, '0')}-${String(nowD.getDate()).padStart(2, '0')}`
                   const pbEntry = [
                     '',
                     `## 来源 lesson ${requestId}（${today}）`,
