@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import {
   defaultConfig, validateConfig, isDesignDoc, hasPendingRequest, hasResultFor,
   buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection, checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent,
-  isGitPushCmd, isTestCmd, isPrecheckCmd, parseProtocolTypes, OWN_WRITE_MARKER,
+  isGitPushCmd, isTestCmd, isPrecheckCmd, parseProtocolTypes, OWN_WRITE_MARKER, nextPollStep,
 } from '../src/core.js'
 
 test('T1: 写入 *.design.md → 识别为设计文档', () => {
@@ -291,4 +291,28 @@ test('G3: parseProtocolTypes 不含某类型 → 该类型不在枚举（防漂�
   const types = parseProtocolTypes(proto)
   assert.ok(!types.includes('skill'))
   assert.ok(types.includes('design'))
+})
+
+// ---------- 20260903-030：startPolling 超时分支纯函数四走向 ----------
+
+test('030: nextPollStep — 30min 内快轮询', () => {
+  assert.deepEqual(nextPollStep({ elapsedMin: 10 }), { action: 'fast', delaySec: 30 })
+  assert.deepEqual(nextPollStep({ elapsedMin: 29.9, lowFreq: 5 }), { action: 'fast', delaySec: 30 })
+})
+
+test('030: nextPollStep — 30min 后归档命中 → deliver-history（不计数）', () => {
+  assert.deepEqual(nextPollStep({ elapsedMin: 31, lowFreq: 0, hasHistory: true }), { action: 'deliver-history', delaySec: 0 })
+  assert.deepEqual(nextPollStep({ elapsedMin: 45, lowFreq: 11, hasHistory: true }), { action: 'deliver-history', delaySec: 0 })
+})
+
+test('030: nextPollStep — 30min 后未命中 → 低频 5min（lowFreq 递增由调用方）', () => {
+  assert.deepEqual(nextPollStep({ elapsedMin: 30, lowFreq: 0 }), { action: 'lowfreq', delaySec: 300 })
+  assert.deepEqual(nextPollStep({ elapsedMin: 60, lowFreq: 11 }), { action: 'lowfreq', delaySec: 300 })
+})
+
+test('030: nextPollStep — 低频 12 次耗尽 → exhausted 终态', () => {
+  assert.deepEqual(nextPollStep({ elapsedMin: 100, lowFreq: 12 }), { action: 'exhausted', delaySec: 0 })
+  assert.deepEqual(nextPollStep({ elapsedMin: 100, lowFreq: 99 }), { action: 'exhausted', delaySec: 0 })
+  // 回归：lowFreq 未初始化（undefined）时默认 0——不会误入 exhausted（030 阻断 bug 回归）
+  assert.equal(nextPollStep({ elapsedMin: 40 }).action, 'lowfreq')
 })

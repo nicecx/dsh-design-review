@@ -24,6 +24,7 @@ import {
   buildRequest, buildGuardrailEntry, checkGuardrailConflict, checkReuseSection,
   checkTemplateSections, scanDefectPattern, isSkillDoc, gateByType, pickGateContent,
   isGitPushCmd, isTestCmd, isPrecheckCmd, parseProtocolTypes, OWN_WRITE_MARKER,
+  nextPollStep,
 } from './core.js'
 
 export const name = 'dsh-design-review'
@@ -315,6 +316,7 @@ export function apply(ctx, rawConfig = {}) {
       } catch { /* 读失败返回 null */ }
       return null
     }
+    let lowFreq = 0  // 030 修复：闭包初始化（原 poll.lowFreq undefined 恒 <12 为 false——低频段死代码）
     const poll = () => {
       try {
         const res = readJson(resPath)
@@ -391,21 +393,27 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
           }
           return
         }
-        // 018 lesson approved 措施②：30min 后不停止——转低频轮询（5min，最多 12 次 ≈1h）
-        // 迟到结论不丢；顺带查 result-history.jsonl（018 措施①守护方归档）兜底被覆盖的结论
-        if (Date.now() - start < 30 * 60 * 1000) {
-          setTimeout(poll, 30000)
-        } else if (poll.lowFreq < 12) {
+        // 018 lesson approved 措施② + 030 修复：30min 后转低频轮询（5min，最多 12 次 ≈1h）
+        // 决策抽纯函数 nextPollStep（core.js）——lowFreq 闭包初始化（030：原 poll.lowFreq
+        // 未初始化致低频段死代码）
+        const step = nextPollStep({ elapsedMin: (Date.now() - start) / 60000, lowFreq, hasHistory: readHistoryVerdict(requestId) !== null })
+        if (step.action === 'fast') {
+          setTimeout(poll, step.delaySec * 1000)
+        } else if (step.action === 'deliver-history') {
           const hist = readHistoryVerdict(requestId)
-          if (hist) {
-            audit({ ts: new Date().toISOString(), action: 'deliver-from-history', sessionId, requestId })
-            const delivered = deliver(sessionId, `「${title}」评审结论（归档补投）: ${hist.verdict}\n${hist.summary || ''}${hist.details?.length ? '\n' + hist.details.join('\n') : ''}`)
-            audit({ ts: new Date().toISOString(), action: delivered ? 'deliver-ok' : 'deliver-fail', sessionId, requestId, from: 'result-history' })
-            return
-          }
-          poll.lowFreq += 1
+          audit({ ts: new Date().toISOString(), action: 'deliver-from-history', sessionId, requestId })
+          const delivered = deliver(sessionId, `「${title}」评审结论（归档补投）: ${hist.verdict}\n${hist.summary || ''}${hist.details?.length ? '\n' + hist.details.join('\n') : ''}`)
+          audit({ ts: new Date().toISOString(), action: delivered ? 'deliver-ok' : 'deliver-fail', sessionId, requestId, from: 'result-history' })
+          if (delivered) return
+          // 030 建议③：deliver 失败不停止——转低频自然重试（hist 下次仍命中）
+          lowFreq += 1
           setTimeout(poll, 5 * 60 * 1000)
+        } else if (step.action === 'lowfreq') {
+          lowFreq += 1
+          setTimeout(poll, step.delaySec * 1000)
         } else {
+          // exhausted：低频 12 次（≈1h）仍无结论——停止（030 建议④：audit 留痕）
+          audit({ ts: new Date().toISOString(), action: 'poll-exhausted', sessionId, requestId, waitedMin: Math.round((Date.now() - start) / 60000) })
           deliver(sessionId, `「${title}」结论未到达（等待超 90min），已停止等待。结论若已产出会归档在 result-history.jsonl（守护方 018 措施①），可查 ~/.dsh/review-handoff/result-history.jsonl 或重新提审。`)
         }
       } catch { setTimeout(poll, 30000) }

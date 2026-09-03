@@ -343,3 +343,21 @@ export function checkGuardrailConflict(existing, entry) {
 export function auditLine(entry) {
   return JSON.stringify(entry)
 }
+
+/**
+ * startPolling 超时分支决策纯函数（20260903-030 要求：状态机分支抽纯函数直测）。
+ * 输入 elapsedMin（自提审起分钟）、lowFreq（已低频轮询次数）、hasHistory（归档命中）。
+ * 返回 { action, delaySec }：
+ *   - fast          elapsedMin < 30 → 30s 快轮询
+ *   - lowfreq       ≥30 且 lowFreq < 12 且归档未命中 → 5min 低频（调用方 lowFreq+1）
+ *   - deliver-history ≥30 且 lowFreq < 12 且归档命中 → 补投（deliver 失败由调用方转 lowfreq 自然重试）
+ *   - exhausted     ≥30 且 lowFreq ≥ 12 → 停止等待（终态）
+ */
+export function nextPollStep({ elapsedMin, lowFreq = 0, hasHistory = false }) {
+  if (elapsedMin < 30) return { action: 'fast', delaySec: 30 }
+  if (lowFreq < 12) {
+    if (hasHistory) return { action: 'deliver-history', delaySec: 0 }
+    return { action: 'lowfreq', delaySec: 300 }
+  }
+  return { action: 'exhausted', delaySec: 0 }
+}
