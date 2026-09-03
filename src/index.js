@@ -296,10 +296,25 @@ export function apply(ctx, rawConfig = {}) {
     } catch { return false }
   }
 
-  /** 轮询 result.json（每 30s，最长 30min），出结论后注入发起会话 + 守则追加。 */
+  /** 轮询 result.json（每 30s，30min 后转低频 5min 最多 12 次——018 措施②），出结论后注入发起会话 + 守则追加。 */
   const startPolling = (requestId, sessionId, title, type) => {
     const start = Date.now()
     const resPath = path.join(reviewDir, 'result.json')
+    // 018 措施①（守护方归档）：result-history.jsonl 逐行匹配 requestId（被覆盖结论兜底）
+    const readHistoryVerdict = (rid) => {
+      try {
+        const hp = path.join(reviewDir, 'result-history.jsonl')
+        if (!existsSync(hp)) return null
+        for (const line of readFileSync(hp, 'utf8').split('\n')) {
+          if (!line.trim()) continue
+          try {
+            const h = JSON.parse(line)
+            if (h && h.requestId === rid && h.verdict) return h
+          } catch { /* 坏行跳过 */ }
+        }
+      } catch { /* 读失败返回 null */ }
+      return null
+    }
     const poll = () => {
       try {
         const res = readJson(resPath)
@@ -376,10 +391,22 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
           }
           return
         }
+        // 018 lesson approved 措施②：30min 后不停止——转低频轮询（5min，最多 12 次 ≈1h）
+        // 迟到结论不丢；顺带查 result-history.jsonl（018 措施①守护方归档）兜底被覆盖的结论
         if (Date.now() - start < 30 * 60 * 1000) {
           setTimeout(poll, 30000)
+        } else if (poll.lowFreq < 12) {
+          const hist = readHistoryVerdict(requestId)
+          if (hist) {
+            audit({ ts: new Date().toISOString(), action: 'deliver-from-history', sessionId, requestId })
+            const delivered = deliver(sessionId, `「${title}」评审结论（归档补投）: ${hist.verdict}\n${hist.summary || ''}${hist.details?.length ? '\n' + hist.details.join('\n') : ''}`)
+            audit({ ts: new Date().toISOString(), action: delivered ? 'deliver-ok' : 'deliver-fail', sessionId, requestId, from: 'result-history' })
+            return
+          }
+          poll.lowFreq += 1
+          setTimeout(poll, 5 * 60 * 1000)
         } else {
-          deliver(sessionId, `「${title}」评审超时（30min 无结论，fail-closed）`)
+          deliver(sessionId, `「${title}」结论未到达（等待超 90min），已停止等待。结论若已产出会归档在 result-history.jsonl（守护方 018 措施①），可查 ~/.dsh/review-handoff/result-history.jsonl 或重新提审。`)
         }
       } catch { setTimeout(poll, 30000) }
     }
