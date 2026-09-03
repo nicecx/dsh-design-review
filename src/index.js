@@ -43,6 +43,8 @@ export function apply(ctx, rawConfig = {}) {
   // 阶段 3（026）：入队 task-queue（唯一真相源），不再直接写 request.json
   const taskQueuePath = config.taskQueuePath || path.join(os.homedir(), '.dsh', 'task-queue', 'queue.json')
   const docsDir = path.join(reviewDir, 'docs')
+  // 20260903-011 approved（ProblemLog 强制点 C）：playbook 登记目录（~/.dsh/problem-log）
+  const problemLogDir = config.problemLogDir || path.join(os.homedir(), '.dsh', 'problem-log')
 
   const ensureDir = () => mkdirSync(reviewDir, { recursive: true })
   /** 035 非阻塞⑤：auto-submit 短窗口去重表（key=path|docType|sessionId → lastTs） */
@@ -336,6 +338,35 @@ export function apply(ctx, rawConfig = {}) {
                 deliver(sessionId, `🧬 lesson 传播扫描（${requestId}）：模式「${pattern}」命中 ${candidates.length} 处候选（前 10 条）：
 ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join('\n') || '（无）'}
 请逐项复核（排除假阳性），确认真命中后按正常提审流程提交修复方案（tier=review 互审）。`)
+                // 20260903-011 approved 强制点 C：playbook 登记 + ISSUES.md 索引行
+                // （唯一写入方 = 本插件 lesson approved 分支——agent 不直写索引防多会话双写；
+                // 不改变传播扫描语义——本段为附加动作）
+                try {
+                  const plDir = path.join(problemLogDir, 'playbooks')
+                  mkdirSync(plDir, { recursive: true })
+                  const slug = pattern.replace(/[^a-z0-9-]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '') || 'lesson-' + requestId
+                  const pbPath = path.join(plDir, `${slug}.md`)
+                  const today = new Date().toISOString().slice(0, 10)
+                  const pbEntry = [
+                    '',
+                    `## 来源 lesson ${requestId}（${today}）`,
+                    '',
+                    '防复发措施（守则已追加 OPS-GUARDRAILS.md）:',
+                    '```',
+                    String(res.summary || '').slice(0, 1500),
+                    '```',
+                    '处理要点:',
+                    ...(res.details || []).slice(0, 5).map((d) => `- ${String(d).slice(0, 250)}`),
+                  ].join('\n')
+                  if (existsSync(pbPath)) appendFileSync(pbPath, pbEntry + '\n')
+                  else writeFileSync(pbPath, `# ${pattern}\n\n> 20260903-011 approved：本 playbook 由 lesson approved 自动登记（强制点 C）\n` + pbEntry + '\n')
+                  const issuesPath = path.join(problemLogDir, 'ISSUES.md')
+                  mkdirSync(path.dirname(issuesPath), { recursive: true })
+                  appendFileSync(issuesPath, `| ${pattern} | playbooks/${slug}.md | lesson ${requestId} | ${today} |\n`)
+                  audit({ ts: new Date().toISOString(), action: 'playbook-registered', requestId, pattern, pb: pbPath })
+                } catch (e) {
+                  audit({ ts: new Date().toISOString(), action: 'playbook-register-failed', requestId, error: String(e).slice(0, 200) })
+                }
               }
             } catch (e) {
               audit({ ts: new Date().toISOString(), action: 'prop-scan-failed', requestId, error: String(e) })
