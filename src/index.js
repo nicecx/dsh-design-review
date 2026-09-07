@@ -317,6 +317,7 @@ export function apply(ctx, rawConfig = {}) {
       return null
     }
     let lowFreq = 0  // 030 修复：闭包初始化（原 poll.lowFreq undefined 恒 <12 为 false——低频段死代码）
+    let freshRetries = 0  // 031 非阻塞落地：fresh-path deliver 失败重试计数（≤5）
     const poll = () => {
       try {
         const res = readJson(resPath)
@@ -326,11 +327,13 @@ export function apply(ctx, rawConfig = {}) {
           const delivered = deliver(sessionId, `「${title}」评审结论: ${verdict}\n${res.summary || ''}${res.details?.length ? '\n' + res.details.join('\n') : ''}`)
           audit({ ts: new Date().toISOString(), action: delivered ? 'deliver-ok' : 'deliver-fail', sessionId, requestId })
           if (type === 'lesson' && verdict === 'approved') {
-            // 守则追加（append-only + 冲突检测）
+            // 守则追加（append-only + 冲突检测 + 幂等——031 重试场景防重复追加）
             const existing = existsSync(guardrailsPath) ? readFileSync(guardrailsPath, 'utf8') : ''
             const entry = buildGuardrailEntry({ measure: res.summary || title, incidentRef: requestId, source: name })
             const conflicts = checkGuardrailConflict(existing, entry)
-            if (conflicts.length === 0) {
+            if (existing.includes(entry)) {
+              audit({ ts: new Date().toISOString(), action: 'guardrail-duplicate-skip', requestId })
+            } else if (conflicts.length === 0) {
               mkdirSync(path.dirname(guardrailsPath), { recursive: true })
               appendFileSync(guardrailsPath, entry + '\n')
               audit({ ts: new Date().toISOString(), action: 'guardrail-appended', requestId })
@@ -390,6 +393,15 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
             } catch (e) {
               audit({ ts: new Date().toISOString(), action: 'prop-scan-failed', requestId, error: String(e) })
             }
+          }
+          // 031 非阻塞落地：fresh-path deliver 失败重试（≤5 次 × 30s）——守则追加已幂等化防重复
+          if (!delivered && freshRetries < 5) {
+            freshRetries += 1
+            setTimeout(poll, 30000)
+            return
+          }
+          if (!delivered) {
+            deliver(sessionId, `「${title}」结论投递失败已重试 5 次放弃。结论在 review-handoff/result.json（及 result-history.jsonl 归档），可查档或重新提审。`)
           }
           return
         }
