@@ -318,6 +318,7 @@ export function apply(ctx, rawConfig = {}) {
     }
     let lowFreq = 0  // 030 修复：闭包初始化（原 poll.lowFreq undefined 恒 <12 为 false——低频段死代码）
     let freshRetries = 0  // 031 非阻塞落地：fresh-path deliver 失败重试计数（≤5）
+    let lessonSideEffectsDone = false  // 001 修复：lesson 副作用整体门控（重试轮不重跑守则/playbook/ISSUES/传播）
     const poll = () => {
       try {
         const res = readJson(resPath)
@@ -326,7 +327,7 @@ export function apply(ctx, rawConfig = {}) {
           // 035 approved：投递审计（可核验发起会话是否收到结论）
           const delivered = deliver(sessionId, `「${title}」评审结论: ${verdict}\n${res.summary || ''}${res.details?.length ? '\n' + res.details.join('\n') : ''}`)
           audit({ ts: new Date().toISOString(), action: delivered ? 'deliver-ok' : 'deliver-fail', sessionId, requestId })
-          if (type === 'lesson' && verdict === 'approved') {
+          if (type === 'lesson' && verdict === 'approved' && !lessonSideEffectsDone) {
             // 守则追加（append-only + 冲突检测 + 幂等——031 重试场景防重复追加）
             const existing = existsSync(guardrailsPath) ? readFileSync(guardrailsPath, 'utf8') : ''
             const entry = buildGuardrailEntry({ measure: res.summary || title, incidentRef: requestId, source: name })
@@ -393,6 +394,7 @@ ${candidates.slice(0, 10).map((c) => `- ${c.file}:${c.line}  ${c.context}`).join
             } catch (e) {
               audit({ ts: new Date().toISOString(), action: 'prop-scan-failed', requestId, error: String(e) })
             }
+            lessonSideEffectsDone = true  // 001 修复：lesson 副作用（守则/playbook/ISSUES/传播）每生命周期只执行一次——重试轮只重投不重跑副作用
           }
           // 031 非阻塞落地：fresh-path deliver 失败重试（≤5 次 × 30s）——守则追加已幂等化防重复
           if (!delivered && freshRetries < 5) {
